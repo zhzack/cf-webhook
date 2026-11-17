@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Env, Bin, WebhookRecord } from './types';
+import { forwardScript } from './forwardScript';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -11,6 +12,16 @@ app.use('*', cors({
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
   allowHeaders: ['*'],
 }));
+
+// 提供内网转发客户端极速获取脚本
+app.get('/forward.mjs', (c) => {
+  return new Response(forwardScript, {
+    headers: {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'no-cache',
+    },
+  });
+});
 
 // 辅助函数：生成简短唯一的 Bin ID (8位字母数字)
 function generateBinId(): string {

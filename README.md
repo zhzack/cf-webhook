@@ -87,3 +87,26 @@ https://webhook.b1uegrey.xyz/bin/3k9f0a2/v1/order/notify
 ```
 所有传入的 Method、Headers、IP、Query 及 Body 都将自动录入并在看板中高亮展示。
 
+---
+
+## 🔄 内网穿透转发 (Local Forwarder)
+
+无需公网 IP，无需配置复杂的端口映射或安装第三方隧道工具。只要内网机器装有 Node.js 18+，即可将云端接收到的 Webhook 实时穿透代发到本地服务（如 `http://localhost:3000/api/webhook`）。
+
+### 方式一：免克隆仓库，终端一行直接运行（推荐任何内网机器）
+```bash
+curl -sL https://webhook.b1uegrey.xyz/forward.mjs | node - -b <频道ID> -t http://localhost:3000/api/webhook
+```
+
+### 方式二：在已克隆的仓库中运行
+```bash
+# 启动转发客户端
+node scripts/forward.mjs -b <频道ID> -t http://localhost:3000/api/webhook
+# 或
+npm run forward -- -b <频道ID> -t http://localhost:3000/api/webhook
+```
+
+* 终端将实时打印转发日志与本地 HTTP 响应耗时（如 `[POST] → 200 OK (12ms)`）；
+* 网页端打开 [https://webhook.b1uegrey.xyz](https://webhook.b1uegrey.xyz) 点击顶部 **「内网转发」** 按钮，可直接一键生成并复制当前频道的完整命令。
+
+

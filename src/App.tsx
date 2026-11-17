@@ -4,6 +4,7 @@ import { RequestList } from './components/RequestList';
 import { RequestDetail } from './components/RequestDetail';
 import { SettingsModal } from './components/SettingsModal';
 import { ReplayModal } from './components/ReplayModal';
+import { ForwardModal } from './components/ForwardModal';
 import { Bin, WebhookRecord } from './types';
 
 export default function App() {
@@ -12,6 +13,7 @@ export default function App() {
   const [selectedRequest, setSelectedRequest] = useState<WebhookRecord | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isForwardOpen, setIsForwardOpen] = useState(false);
   const [isReplayOpen, setIsReplayOpen] = useState(false);
   const [replayTargetReq, setReplayTargetReq] = useState<WebhookRecord | null>(null);
 
@@ -183,6 +185,7 @@ export default function App() {
         isConnected={isConnected}
         onNewBin={createNewBin}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenForward={() => setIsForwardOpen(true)}
         onClearRequests={handleClearRequests}
         totalRequests={requests.length}
       />
@@ -202,6 +205,13 @@ export default function App() {
           onOpenReplay={handleOpenReplay}
         />
       </main>
+
+      {/* 内网转发客户端弹窗 */}
+      <ForwardModal
+        isOpen={isForwardOpen}
+        onClose={() => setIsForwardOpen(false)}
+        bin={bin}
+      />
 
       {/* 自定义响应配置弹窗 */}
       <SettingsModal

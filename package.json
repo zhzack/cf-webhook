@@ -9,7 +9,8 @@
     "dev": "vite",
     "build:web": "vite build",
     "build": "vite build",
-    "deploy": "vite build && wrangler deploy"
+    "deploy": "vite build && wrangler deploy",
+    "forward": "node scripts/forward.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

@@ -16,6 +16,7 @@ interface HeaderProps {
   isConnected: boolean;
   onNewBin: () => void;
   onOpenSettings: () => void;
+  onOpenForward: () => void;
   onClearRequests: () => void;
   totalRequests: number;
 }
@@ -25,6 +26,7 @@ export const Header: React.FC<HeaderProps> = ({
   isConnected,
   onNewBin,
   onOpenSettings,
+  onOpenForward,
   onClearRequests,
   totalRequests,
 }) => {
@@ -105,6 +107,15 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* 操作功能按钮 */}
         <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+          <button
+            onClick={onOpenForward}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 transition shadow-sm"
+            title="将收到的 Webhook 实时穿透转发到本地/内网机器"
+          >
+            <Radio className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+            <span>内网转发</span>
+          </button>
+
           <button
             onClick={onOpenSettings}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
