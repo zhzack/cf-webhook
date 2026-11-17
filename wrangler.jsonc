@@ -18,6 +18,11 @@
 			"database_id": "af8e24e1-5515-4083-85dd-df928156e545"
 		}
 	],
+	"vars": {
+		"JWT_SECRET": "b1uegrey_shared_sso_secret_2026_xyz",
+		"ROOT_DOMAIN": "b1uegrey.xyz",
+		"AUTH_URL": "https://auth.b1uegrey.xyz"
+	},
 	"routes": [
 		{
 			"pattern": "webhook.b1uegrey.xyz",

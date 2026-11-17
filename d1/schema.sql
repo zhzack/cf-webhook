@@ -2,6 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS bins (
   id TEXT PRIMARY KEY,
+  user_id TEXT,
   name TEXT,
   response_status INTEGER DEFAULT 200,
   response_content_type TEXT DEFAULT 'application/json',
@@ -10,6 +11,8 @@ CREATE TABLE IF NOT EXISTS bins (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_bins_user ON bins (user_id);
 
 CREATE TABLE IF NOT EXISTS requests (
   id TEXT PRIMARY KEY,
@@ -27,4 +30,3 @@ CREATE TABLE IF NOT EXISTS requests (
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_bin_created ON requests (bin_id, created_at DESC);
-

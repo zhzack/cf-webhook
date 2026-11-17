@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Send, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { WebhookRecord } from '../types';
+import { fetchApi } from '../api';
 
 interface ReplayModalProps {
   isOpen: boolean;
@@ -46,11 +47,14 @@ export const ReplayModal: React.FC<ReplayModalProps> = ({
     } catch {}
 
     try {
-      const res = await fetch(`/api/bins/${binId}/replay`, {
+      const data = await fetchApi<{
+        success: boolean;
+        status?: number;
+        statusText?: string;
+        body?: string;
+        error?: string;
+      }>(`/api/bins/${binId}/replay`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({
           targetUrl,
           method,
@@ -59,7 +63,6 @@ export const ReplayModal: React.FC<ReplayModalProps> = ({
         }),
       });
 
-      const data = await res.json();
       if (data.success) {
         setResult({
           success: true,

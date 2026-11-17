@@ -7,7 +7,7 @@
  * 原理：通过 Server-Sent Events (SSE) 长连接从云端拉取 Webhook 事件，并在内网本地代发 HTTP 请求。
  * 
  * 用法：
- *   node scripts/forward.mjs --bin <binId> --target <localUrl>
+ *   node scripts/forward.mjs --bin <binId> --target <localUrl> [-k <token>]
  * 
  * 示例：
  *   node scripts/forward.mjs -b feishu -t http://localhost:3000/api/webhook
@@ -50,19 +50,21 @@ ${ANSI.bold}用法:${ANSI.reset}
 ${ANSI.bold}选项:${ANSI.reset}
   -b, --bin <id>       Webhook 频道 ID (必填，例如: feishu)
   -t, --target <url>   内网目标转发地址 (必填，例如: http://localhost:3000/api/webhook)
+  -k, --token <token>  SSO 访问令牌 (可选，若线上启用了身份校验需提供)
   -s, --server <url>   云端平台地址 (默认: https://webhook.b1uegrey.xyz)
   --keep-path          保留并追加子路径到目标地址 (默认: false)
   -h, --help           显示此帮助信息
 
 ${ANSI.bold}示例:${ANSI.reset}
   node scripts/forward.mjs -b feishu -t http://localhost:3000/api/webhook
-  node scripts/forward.mjs -b test -t http://127.0.0.1:8080/order/callback
+  node scripts/forward.mjs -b test -t http://127.0.0.1:8080/order/callback -k eyJhbGci...
 `);
   process.exit(0);
 }
 
 const binId = getArg('b', 'bin', process.env.WEBHOOK_BIN || '');
 const targetUrl = getArg('t', 'target', process.env.WEBHOOK_TARGET || '');
+const token = getArg('k', 'token', process.env.WEBHOOK_TOKEN || '');
 const serverUrl = (getArg('s', 'server', process.env.WEBHOOK_SERVER || 'https://webhook.b1uegrey.xyz')).replace(/\/+$/, '');
 const keepPath = args.includes('--keep-path');
 
@@ -78,7 +80,10 @@ if (!targetUrl) {
   process.exit(1);
 }
 
-const streamUrl = `${serverUrl}/api/bins/${binId}/stream`;
+let streamUrl = `${serverUrl}/api/bins/${binId}/stream`;
+if (token) {
+  streamUrl += (streamUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+}
 
 console.log(`
 ${ANSI.cyan}${ANSI.bold}┌─────────────────────────────────────────────────────────────┐
@@ -87,6 +92,7 @@ ${ANSI.cyan}${ANSI.bold}┌─────────────────�
   ${ANSI.dim}• 云端频道:${ANSI.reset}  ${ANSI.bold}${serverUrl}/bin/${binId}${ANSI.reset}
   ${ANSI.dim}• 内网目标:${ANSI.reset}  ${ANSI.bold}${ANSI.green}${targetUrl}${ANSI.reset}
   ${ANSI.dim}• 事件流源:${ANSI.reset}  ${ANSI.dim}${streamUrl}${ANSI.reset}
+  ${ANSI.dim}• 认证凭证:${ANSI.reset}  ${token ? ANSI.green + '已配置 (Bearer Token)' : ANSI.dim + '使用 Cookie 或公开'}${ANSI.reset}
   ${ANSI.dim}• 运行状态:${ANSI.reset}  ${ANSI.yellow}正在连接云端事件流...${ANSI.reset}
 `);
 
@@ -162,14 +168,25 @@ async function forwardRequest(record) {
 async function startStream() {
   while (isRunning) {
     try {
+      const reqHeaders = {
+        'Accept': 'text/event-stream',
+        'User-Agent': 'Webhook-Inspector-Forwarder/1.0',
+      };
+      if (token) {
+        reqHeaders['Authorization'] = `Bearer ${token}`;
+      }
+
       const res = await fetch(streamUrl, {
-        headers: {
-          'Accept': 'text/event-stream',
-          'User-Agent': 'Webhook-Inspector-Forwarder/1.0',
-        },
+        headers: reqHeaders,
       });
 
       if (!res.ok || !res.body) {
+        if (res.status === 401) {
+          throw new Error('未授权 (HTTP 401)，请提供有效 Token: -k <token> 或登录 https://auth.b1uegrey.xyz');
+        }
+        if (res.status === 403) {
+          throw new Error('权限不足 (HTTP 403)，当前账号未获得 Webhook 权限，请在认证中心联系管理员开通');
+        }
         throw new Error(`连接失败，云端返回 HTTP ${res.status}`);
       }
 
@@ -213,7 +230,7 @@ async function startStream() {
 
     } catch (err) {
       if (!isRunning) break;
-      console.warn(`${ANSI.yellow}⚠️ 长连接断开: ${err.message}，将在 3 秒后自动重连...${ANSI.reset}`);
+      console.warn(`${ANSI.yellow}⚠️ 连接异常: ${err.message}，将在 3 秒后重试...${ANSI.reset}`);
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
   }

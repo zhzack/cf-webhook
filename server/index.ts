@@ -1,11 +1,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { Env, Bin, WebhookRecord } from './types';
+import { Env, Bin, WebhookRecord, UserSession } from './types';
 import { forwardScript } from './forwardScript';
+import { requireAuth } from './auth';
+import { authRouter } from './routes/auth';
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: { user: UserSession; token: string } }>();
 
-// CORS 配置
+// CORS 配置 (允许凭证跨子域传递)
 app.use('*', cors({
   origin: (origin) => origin || '*',
   credentials: true,
@@ -13,7 +15,7 @@ app.use('*', cors({
   allowHeaders: ['*'],
 }));
 
-// 提供内网转发客户端极速获取脚本
+// 提供内网转发客户端极速获取脚本 (公开免鉴权，通过 curl 管道直接下载)
 app.get('/forward.mjs', (c) => {
   return new Response(forwardScript, {
     headers: {
@@ -22,6 +24,16 @@ app.get('/forward.mjs', (c) => {
     },
   });
 });
+
+// 辅助函数：安全兼容新增字段 user_id
+let schemaEnsured = false;
+async function ensureSchema(db: D1Database) {
+  if (schemaEnsured) return;
+  try {
+    await db.prepare('ALTER TABLE bins ADD COLUMN user_id TEXT').run();
+  } catch {}
+  schemaEnsured = true;
+}
 
 // 辅助函数：生成简短唯一的 Bin ID (8位字母数字)
 function generateBinId(): string {
@@ -35,20 +47,28 @@ function generateBinId(): string {
   return result;
 }
 
-// 辅助函数：根据 binId 查找或隐式创建 Bin
-async function getOrCreateBin(db: D1Database, binId: string): Promise<Bin> {
+// 辅助函数：根据 binId 查找或隐式创建 Bin，并关联所有者用户
+async function getOrCreateBin(db: D1Database, binId: string, userId?: string): Promise<Bin> {
+  await ensureSchema(db);
   const existing = await db
     .prepare('SELECT * FROM bins WHERE id = ?')
     .bind(binId)
     .first<Bin>();
 
   if (existing) {
+    if (!existing.user_id && userId) {
+      try {
+        await db.prepare('UPDATE bins SET user_id = ? WHERE id = ?').bind(userId, binId).run();
+        existing.user_id = userId;
+      } catch {}
+    }
     return existing;
   }
 
   const now = Date.now();
   const newBin: Bin = {
     id: binId,
+    user_id: userId || null,
     name: `Bin ${binId}`,
     response_status: 200,
     response_content_type: 'application/json',
@@ -60,11 +80,12 @@ async function getOrCreateBin(db: D1Database, binId: string): Promise<Bin> {
 
   await db
     .prepare(
-      `INSERT INTO bins (id, name, response_status, response_content_type, response_body, feishu_auto_challenge, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO bins (id, user_id, name, response_status, response_content_type, response_body, feishu_auto_challenge, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       newBin.id,
+      newBin.user_id,
       newBin.name,
       newBin.response_status,
       newBin.response_content_type,
@@ -81,28 +102,54 @@ async function getOrCreateBin(db: D1Database, binId: string): Promise<Bin> {
 // ----------------------------------------------------
 // 1. API 路由 (/api/...)
 // ----------------------------------------------------
-const api = new Hono<{ Bindings: Env }>();
+const api = new Hono<{ Bindings: Env; Variables: { user: UserSession; token: string } }>();
 
+// 健康检查 (公开)
 api.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: Date.now() });
+  return c.json({ status: 'ok', service: 'cf-webhook', timestamp: Date.now() });
 });
 
-// 创建新 Bin
-api.post('/bins', async (c) => {
+// 认证子路由 (/api/auth)
+api.route('/auth', authRouter);
+
+// 获取当前登录用户可访问的所有 Bin 列表 (需要 SSO 登录)
+api.get('/bins', requireAuth, async (c) => {
+  const user = c.get('user');
+  await ensureSchema(c.env.DB);
+  const results = await c.env.DB
+    .prepare(
+      `SELECT * FROM bins 
+       WHERE user_id = ? OR user_id IS NULL 
+       ORDER BY updated_at DESC 
+       LIMIT 50`
+    )
+    .bind(user.id)
+    .all<Bin>();
+
+  return c.json({
+    success: true,
+    bins: results.results || [],
+  });
+});
+
+// 创建新 Bin (需要 SSO 登录)
+api.post('/bins', requireAuth, async (c) => {
+  const user = c.get('user');
   const binId = generateBinId();
-  const bin = await getOrCreateBin(c.env.DB, binId);
+  const bin = await getOrCreateBin(c.env.DB, binId, user.id);
   return c.json({ success: true, bin });
 });
 
-// 获取指定 Bin 的配置信息
-api.get('/bins/:binId', async (c) => {
-  const binId = c.req.param('binId');
-  const bin = await getOrCreateBin(c.env.DB, binId);
+// 获取指定 Bin 的配置信息 (需要 SSO 登录)
+api.get('/bins/:binId', requireAuth, async (c) => {
+  const user = c.get('user');
+  const binId = c.req.param('binId') || '';
+  const bin = await getOrCreateBin(c.env.DB, binId, user.id);
   return c.json({ success: true, bin });
 });
 
-// 更新指定 Bin 的自定义响应规则
-api.put('/bins/:binId', async (c) => {
+// 更新指定 Bin 的自定义响应规则 (需要 SSO 登录)
+api.put('/bins/:binId', requireAuth, async (c) => {
   const binId = c.req.param('binId');
   const body = await c.req.json().catch(() => ({}));
   const now = Date.now();
@@ -113,6 +160,7 @@ api.put('/bins/:binId', async (c) => {
   const feishu_auto_challenge = body.feishu_auto_challenge ? 1 : 0;
   const name = body.name || `Bin ${binId}`;
 
+  await ensureSchema(c.env.DB);
   await c.env.DB
     .prepare(
       `INSERT INTO bins (id, name, response_status, response_content_type, response_body, feishu_auto_challenge, created_at, updated_at)
@@ -136,8 +184,8 @@ api.put('/bins/:binId', async (c) => {
   return c.json({ success: true, bin: updated });
 });
 
-// 获取请求历史列表 (默认最新 100 条)
-api.get('/bins/:binId/requests', async (c) => {
+// 获取请求历史列表 (默认最新 100 条，需要 SSO 登录)
+api.get('/bins/:binId/requests', requireAuth, async (c) => {
   const binId = c.req.param('binId');
   const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 200);
 
@@ -157,8 +205,8 @@ api.get('/bins/:binId/requests', async (c) => {
   });
 });
 
-// 清空当前 Bin 的所有历史请求
-api.delete('/bins/:binId/requests', async (c) => {
+// 清空当前 Bin 的所有历史请求 (需要 SSO 登录)
+api.delete('/bins/:binId/requests', requireAuth, async (c) => {
   const binId = c.req.param('binId');
   await c.env.DB
     .prepare('DELETE FROM requests WHERE bin_id = ?')
@@ -167,8 +215,8 @@ api.delete('/bins/:binId/requests', async (c) => {
   return c.json({ success: true });
 });
 
-// 删除单个请求记录
-api.delete('/bins/:binId/requests/:reqId', async (c) => {
+// 删除单个请求记录 (需要 SSO 登录)
+api.delete('/bins/:binId/requests/:reqId', requireAuth, async (c) => {
   const binId = c.req.param('binId');
   const reqId = c.req.param('reqId');
   await c.env.DB
@@ -178,8 +226,8 @@ api.delete('/bins/:binId/requests/:reqId', async (c) => {
   return c.json({ success: true });
 });
 
-// 请求重放代理 (Replay / Forward)
-api.post('/bins/:binId/replay', async (c) => {
+// 请求重放代理 (Replay / Forward，需要 SSO 登录)
+api.post('/bins/:binId/replay', requireAuth, async (c) => {
   try {
     const payload = await c.req.json();
     const { targetUrl, method = 'POST', headers = {}, body } = payload;
@@ -221,8 +269,8 @@ api.post('/bins/:binId/replay', async (c) => {
   }
 });
 
-// SSE 实时推送流
-api.get('/bins/:binId/stream', (c) => {
+// SSE 实时推送流 (支持浏览器 Cookie 或客户端 Token 鉴权)
+api.get('/bins/:binId/stream', requireAuth, (c) => {
   const binId = c.req.param('binId');
   const db = c.env.DB;
 
@@ -295,6 +343,7 @@ app.route('/api', api);
 
 // ----------------------------------------------------
 // 2. Webhook 万能接收网关 (/bin/:binId, /bin/:binId/*)
+// 保持对第三方平台 (如飞书、GitHub、Stripe、微信等) 公开免密接收
 // ----------------------------------------------------
 app.all('/bin/:binId/*', handleWebhook);
 app.all('/bin/:binId', handleWebhook);
@@ -414,4 +463,3 @@ app.get('*', async (c) => {
 });
 
 export default app;
-

@@ -1,5 +1,15 @@
+export interface User {
+  id: string;
+  username: string;
+  nickname: string;
+  role?: string;
+  status?: string;
+  allowedApps?: string[];
+}
+
 export interface Bin {
   id: string;
+  user_id?: string | null;
   name?: string;
   response_status: number;
   response_content_type: string;
@@ -23,4 +33,3 @@ export interface WebhookRecord {
   content_type: string | null;
   created_at: number;
 }
-

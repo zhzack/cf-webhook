@@ -6,12 +6,14 @@ interface ForwardModalProps {
   isOpen: boolean;
   onClose: () => void;
   bin: Bin | null;
+  token?: string | null;
 }
 
 export const ForwardModal: React.FC<ForwardModalProps> = ({
   isOpen,
   onClose,
   bin,
+  token,
 }) => {
   const [targetUrl, setTargetUrl] = useState('http://localhost:3000/api/webhook');
   const [copiedType, setCopiedType] = useState<string | null>(null);
@@ -20,12 +22,13 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
 
   const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   const serverOrigin = isLocal ? window.location.origin : 'https://webhook.b1uegrey.xyz';
+  const tokenFlag = token ? ` -k ${token}` : '';
 
   // 1. 免克隆一行运行命令
-  const oneLineCmd = `curl -sL ${serverOrigin}/forward.mjs | node - -b ${bin.id} -t ${targetUrl}`;
+  const oneLineCmd = `curl -sL ${serverOrigin}/forward.mjs | node - -b ${bin.id} -t ${targetUrl}${tokenFlag}`;
 
   // 2. 本地项目内运行命令
-  const localProjectCmd = `node scripts/forward.mjs -b ${bin.id} -t ${targetUrl}`;
+  const localProjectCmd = `node scripts/forward.mjs -b ${bin.id} -t ${targetUrl}${tokenFlag}`;
 
   const copyToClipboard = (text: string, type: string) => {
     navigator.clipboard.writeText(text);
@@ -64,9 +67,16 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
           
           {/* 原理提示 */}
           <div className="p-3 bg-indigo-950/40 border border-indigo-500/20 rounded-lg text-slate-300 leading-relaxed space-y-1">
-            <div className="flex items-center gap-1.5 font-semibold text-indigo-300">
-              <ShieldCheck className="w-4 h-4 text-indigo-400" />
-              <span>无需公网 IP，穿透一切内网与防火墙</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 font-semibold text-indigo-300">
+                <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                <span>无需公网 IP，穿透一切内网与防火墙</span>
+              </div>
+              {token && (
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded font-mono">
+                  已注入 SSO 凭证
+                </span>
+              )}
             </div>
             <p className="text-[11px] text-slate-400">
               内网客户端通过 SSE 长连接主动连接云端。当飞书等平台向你的 Webhook 发送请求时，客户端将在内网毫秒级复刻并发起该 HTTP 请求。

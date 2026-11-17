@@ -1,10 +1,23 @@
 export interface Env {
   DB: D1Database;
+  JWT_SECRET?: string;
+  ROOT_DOMAIN?: string;
+  AUTH_URL?: string;
   ASSETS?: Fetcher;
+}
+
+export interface UserSession {
+  id: string;
+  username: string;
+  nickname: string;
+  role?: string;
+  status?: string;
+  allowedApps?: string[];
 }
 
 export interface Bin {
   id: string;
+  user_id?: string | null;
   name?: string;
   response_status: number;
   response_content_type: string;
@@ -28,4 +41,3 @@ export interface WebhookRecord {
   content_type: string | null;
   created_at: number;
 }
-
