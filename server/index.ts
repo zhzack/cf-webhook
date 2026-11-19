@@ -4,6 +4,7 @@ import { Env, Bin, WebhookRecord, UserSession } from './types';
 import { forwardScript } from './forwardScript';
 import { requireAuth } from './auth';
 import { authRouter } from './routes/auth';
+import { tunnelRouter } from './routes/tunnel';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: UserSession; token: string } }>();
 
@@ -111,6 +112,9 @@ api.get('/health', (c) => {
 
 // 认证子路由 (/api/auth)
 api.route('/auth', authRouter);
+
+// TCP 隧道路由 (/api/tunnel)
+api.route('/', tunnelRouter);
 
 // 获取当前登录用户可访问的所有 Bin 列表 (需要 SSO 登录)
 api.get('/bins', requireAuth, async (c) => {

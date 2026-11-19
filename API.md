@@ -25,6 +25,9 @@
 - [六、实时数据流 (SSE，需登录或 Token)](#六实时数据流-sse需登录或-token)
   - [1. 建立 SSE 连接 (GET /api/bins/:binId/stream)](#1-建立-sse-连接-get-apibinsbinidstream)
   - [2. 内网转发命令行客户端 (-k 参数)](#2-内网转发命令行客户端--k-参数)
+- [七、TCP 隧道与出站代理 API (需登录或 Token)](#七tcp-隧道与出站代理-api-需登录或-token)
+  - [1. 建立 TCP 隧道 (GET /api/tunnel?target=host:port)](#1-建立-tcp-隧道-get-apitunneltargethostport)
+  - [2. 命令行出站代理启动与使用规范](#2-命令行出站代理启动与使用规范)
 
 ---
 
@@ -207,3 +210,38 @@ curl -sL https://webhook.b1uegrey.xyz/forward.mjs | node - -b <binId> -t http://
 node scripts/forward.mjs -b <binId> -t http://localhost:3000/api/webhook -k <token>
 ```
 * `-k, --token`：传入在 Webhook Inspector 界面获取的当前 SSO Token，即可跨内网安全连接云端流。
+
+---
+
+## 七、TCP 隧道与出站代理 API (需登录或 Token)
+
+为解决国内开发机器无法直接访问海外 API（如 Telegram Bot API、OpenAI、Discord 等）的问题，平台通过 Cloudflare Workers 原生 `cloudflare:sockets` 提供了透明的 TCP 字节流隧道。
+
+### 1. 建立 TCP 隧道
+* **接口**：`GET /api/tunnel?target=<host>:<port>`
+* **请求头**：`Upgrade: websocket`
+* **鉴权要求**：需携带 Cookie 或 `?token=<JWT>` 或 `Authorization: Bearer <JWT>`
+* **协议**：WebSocket 全双工字节流
+* **参数说明**：
+  - `target`：必填，远程目标主机与端口（如 `api.telegram.org:443` 或 `api.openai.com:443`）。
+* **原理**：
+  1. 客户端发起 WebSocket 握手；
+  2. 边缘 Worker 鉴权通过后，在海外边缘机房与目标 `host:port` 建立原生 TCP Socket 连接；
+  3. WebSocket 管道与 TCP Socket 管道双向透传字节流，客户端与目标服务直接进行端到端 TLS 握手，无证书风险。
+
+### 2. 命令行出站代理启动与使用规范
+
+本地运行 `scripts/forward.mjs proxy`，即可将 WebSocket 隧道包装为标准本地 HTTP/HTTPS 正向代理（支持 HTTP `CONNECT` 隧道协议）：
+
+```bash
+# 启动标准 HTTP 代理监听本地 8787 端口
+node scripts/forward.mjs proxy -p 8787 -k <token>
+
+# 在终端配置标准环境变量 (业务代码完全无需修改，无缝平替 Clash)
+export HTTPS_PROXY=http://127.0.0.1:8787
+export HTTP_PROXY=http://127.0.0.1:8787
+
+# 测试直连 Telegram Bot API
+curl -x http://127.0.0.1:8787 https://api.telegram.org
+```
+

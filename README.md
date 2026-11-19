@@ -111,4 +111,32 @@ npm run forward -- -b <频道ID> -t http://localhost:3000/api/webhook
 * 终端将实时打印转发日志与本地 HTTP 响应耗时（如 `[POST] → 200 OK (12ms)`）；
 * 网页端打开 [https://webhook.b1uegrey.xyz](https://webhook.b1uegrey.xyz) 点击顶部 **「内网转发」** 按钮，可直接一键生成并复制当前频道的完整命令。
 
+---
+
+## ⚡ 标准 HTTP/HTTPS 出站代理 (免翻连 Telegram / OpenAI)
+
+在开发 Telegram 机器人、OpenAI 接口调用或海外第三方 API 时，本地无需开启任何翻墙客户端或根证书，通过 Cloudflare Workers 边缘 TCP 隧道，直接启动本地标准 HTTP 代理：
+
+### 1. 独立启动本地出站代理 (默认 8787 端口)
+```bash
+# 启动本地代理
+node scripts/forward.mjs proxy -p 8787
+
+# 终端设置标准代理环境变量 (无缝平替 Clash 7890 端口，业务代码 0 修改)
+export HTTPS_PROXY=http://127.0.0.1:8787
+export HTTP_PROXY=http://127.0.0.1:8787
+
+# 测试直连 Telegram Bot API
+curl -x http://127.0.0.1:8787 https://api.telegram.org
+```
+
+### 2. 双剑合璧模式：入站 Webhook + 出站代理同时运行
+```bash
+# 同时开启：
+# 1. 接收 Telegram Webhook 并穿透到本地 3000 端口
+# 2. 监听 8787 端口作为出站代理供本地机器人调用海外 API
+node scripts/forward.mjs -b my-bot -t http://localhost:3000/webhook --proxy 8787
+```
+
+
 
