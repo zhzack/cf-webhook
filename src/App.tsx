@@ -7,13 +7,14 @@ import { ReplayModal } from './components/ReplayModal';
 import { ForwardModal } from './components/ForwardModal';
 import { ShareModal } from './components/ShareModal';
 import { ApiClient } from './components/ApiClient';
-import { Bin, WebhookRecord, User, BinMember } from './types';
+import { Bin, WebhookRecord, User, BinMember, OutboundRequestPayload } from './types';
 import { fetchApi } from './api';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [mainViewMode, setMainViewMode] = useState<'inspector' | 'client'>('inspector');
+  const [clientInitialPayload, setClientInitialPayload] = useState<OutboundRequestPayload | null>(null);
   const [myBins, setMyBins] = useState<Bin[]>([]);
   const [sharedBins, setSharedBins] = useState<Bin[]>([]);
   const [userBins, setUserBins] = useState<Bin[]>([]);
@@ -484,6 +485,30 @@ export default function App() {
     setIsReplayOpen(true);
   };
 
+  // 联动：在出站发包调试器中打开当前 Webhook 请求进行二次编辑与发送
+  const handleOpenInClient = (req: WebhookRecord) => {
+    let headersObj: Record<string, string> = {};
+    try {
+      headersObj = JSON.parse(req.headers || '{}');
+    } catch {}
+    let queryObj: Record<string, string> = {};
+    try {
+      queryObj = JSON.parse(req.query_params || '{}');
+    } catch {}
+
+    const fullUrl = req.url.startsWith('http') ? req.url : `${window.location.origin}${req.url}`;
+
+    setClientInitialPayload({
+      url: fullUrl,
+      method: req.method || 'POST',
+      headers: headersObj,
+      queryParams: queryObj,
+      body: req.body || '',
+      auth: { type: 'none' },
+    });
+    setMainViewMode('client');
+  };
+
   // 左右拖拽调整分栏宽度
   const handleMouseDownResize = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -550,7 +575,7 @@ export default function App() {
       {/* 主体视图 */}
       {mainViewMode === 'client' ? (
         <main className="flex-1 flex overflow-hidden relative select-text">
-          <ApiClient />
+          <ApiClient initialPayload={clientInitialPayload} />
         </main>
       ) : (
         /* 主体两栏视图（支持拖拽分栏与移动端自适应抽屉） */
@@ -593,6 +618,7 @@ export default function App() {
                 request={selectedRequest}
                 onDelete={handleDeleteRequest}
                 onOpenReplay={handleOpenReplay}
+                onOpenInClient={handleOpenInClient}
                 canEdit={canEdit}
                 isMobile={isMobile}
                 onBackToList={() => setSelectedRequest(null)}

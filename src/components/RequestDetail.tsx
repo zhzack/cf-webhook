@@ -11,7 +11,8 @@ import {
   Calendar,
   Globe,
   Monitor,
-  ArrowLeft
+  ArrowLeft,
+  Sliders
 } from 'lucide-react';
 import { WebhookRecord } from '../types';
 import { getMethodColor, generateCurl } from '../lib/utils';
@@ -21,6 +22,7 @@ interface RequestDetailProps {
   request: WebhookRecord | null;
   onDelete: (id: string) => void;
   onOpenReplay: (req: WebhookRecord) => void;
+  onOpenInClient?: (req: WebhookRecord) => void;
   canEdit?: boolean;
   onBackToList?: () => void;
   isMobile?: boolean;
@@ -30,6 +32,7 @@ export const RequestDetail: React.FC<RequestDetailProps> = ({
   request,
   onDelete,
   onOpenReplay,
+  onOpenInClient,
   canEdit = true,
   onBackToList,
   isMobile = false,
@@ -114,6 +117,17 @@ export const RequestDetail: React.FC<RequestDetailProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {onOpenInClient && (
+              <button
+                onClick={() => onOpenInClient(request)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-900/50 hover:bg-indigo-800/80 text-indigo-300 border border-indigo-700/60 shadow-sm transition"
+                title="导入此请求到发包调试器中进行修改和二次发送"
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>在调试器中打开</span>
+              </button>
+            )}
+
             {canEdit && (
               <button
                 onClick={() => onOpenReplay(request)}
