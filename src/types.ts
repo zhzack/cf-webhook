@@ -11,12 +11,27 @@ export interface Bin {
   id: string;
   user_id?: string | null;
   name?: string;
+  description?: string | null;
   response_status: number;
   response_content_type: string;
   response_body: string;
   feishu_auto_challenge: number;
+  share_token?: string | null;
+  is_public?: number;
   created_at: number;
   updated_at: number;
+  role?: 'owner' | 'editor' | 'viewer';
+  owner_name?: string;
+  request_count?: number;
+}
+
+export interface BinMember {
+  bin_id: string;
+  user_id: string;
+  role: 'owner' | 'editor' | 'viewer';
+  created_at: number;
+  username?: string;
+  nickname?: string;
 }
 
 export interface WebhookRecord {

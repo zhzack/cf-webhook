@@ -1,30 +1,55 @@
 export interface Env {
   DB: D1Database;
-  JWT_SECRET?: string;
-  ROOT_DOMAIN?: string;
-  AUTH_URL?: string;
   ASSETS?: Fetcher;
+  JWT_SECRET?: string;
+  AUTH_URL?: string;
+  ROOT_DOMAIN?: string;
 }
 
 export interface UserSession {
   id: string;
   username: string;
-  nickname: string;
+  nickname?: string;
   role?: string;
   status?: string;
   allowedApps?: string[];
+}
+
+export interface UserRecord {
+  id: string;
+  username: string;
+  password_hash: string;
+  salt: string;
+  nickname?: string;
+  created_at: number;
 }
 
 export interface Bin {
   id: string;
   user_id?: string | null;
   name?: string;
+  description?: string | null;
   response_status: number;
   response_content_type: string;
   response_body: string;
   feishu_auto_challenge: number; // 1: true, 0: false
+  share_token?: string | null;
+  is_public: number; // 0: private, 1: token public
   created_at: number;
   updated_at: number;
+  // 附加计算属性
+  role?: 'owner' | 'editor' | 'viewer';
+  owner_name?: string;
+  request_count?: number;
+}
+
+export interface BinMember {
+  bin_id: string;
+  user_id: string;
+  role: 'owner' | 'editor' | 'viewer';
+  created_at: number;
+  username?: string;
+  nickname?: string;
 }
 
 export interface WebhookRecord {

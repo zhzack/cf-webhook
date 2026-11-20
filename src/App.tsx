@@ -5,13 +5,17 @@ import { RequestDetail } from './components/RequestDetail';
 import { SettingsModal } from './components/SettingsModal';
 import { ReplayModal } from './components/ReplayModal';
 import { ForwardModal } from './components/ForwardModal';
-import { Bin, WebhookRecord, User } from './types';
+import { ShareModal } from './components/ShareModal';
+import { Bin, WebhookRecord, User, BinMember } from './types';
 import { fetchApi } from './api';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
+  const [myBins, setMyBins] = useState<Bin[]>([]);
+  const [sharedBins, setSharedBins] = useState<Bin[]>([]);
   const [userBins, setUserBins] = useState<Bin[]>([]);
+  const [binMembers, setBinMembers] = useState<BinMember[]>([]);
   const [authLoading, setAuthLoading] = useState(true);
   const [ssoAuthUrl, setSsoAuthUrl] = useState('https://auth.b1uegrey.xyz');
 
@@ -22,9 +26,33 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isForwardOpen, setIsForwardOpen] = useState(false);
   const [isReplayOpen, setIsReplayOpen] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
+  const [isStreamPaused, setIsStreamPaused] = useState(false);
   const [replayTargetReq, setReplayTargetReq] = useState<WebhookRecord | null>(null);
 
+  // 左右分栏自由调节与移动端响应式
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('sidebar_width');
+      return saved ? Math.max(260, Math.min(600, parseInt(saved, 10))) : 340;
+    }
+    return 340;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+
   const eventSourceRef = useRef<EventSource | null>(null);
+  const isStreamPausedRef = useRef(isStreamPaused);
+  isStreamPausedRef.current = isStreamPaused;
+
+  // 响应窗口尺寸变化
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // 1. 检查 SSO 鉴权状态与加载用户信息
   useEffect(() => {
@@ -74,8 +102,11 @@ export default function App() {
         }
         setAuthLoading(false);
 
-        // 加载用户所属所有频道并初始化活跃频道
-        await fetchUserBinsAndSelect();
+        // 检查是否有通过邀请口令加入频道的动作 (#join=st_xxxx)
+        const joined = await handleCheckJoinHash();
+        if (!joined) {
+          await fetchUserBinsAndSelect();
+        }
         return;
       } catch (authErr) {
         // 未登录状态
@@ -107,7 +138,10 @@ export default function App() {
 
         // 本地环境：允许无认证或本地测试
         setAuthLoading(false);
-        await initBinWithoutAuth();
+        const joined = await handleCheckJoinHash();
+        if (!joined) {
+          await initBinWithoutAuth();
+        }
       }
     } catch (err) {
       setAuthLoading(false);
@@ -115,25 +149,63 @@ export default function App() {
     }
   };
 
-  // 加载用户所属频道列表
-  const fetchUserBinsAndSelect = async () => {
+  // 检测 URL hash 中的邀请口令 #join=st_xxxx
+  const handleCheckJoinHash = async (): Promise<boolean> => {
+    if (typeof window === 'undefined') return false;
+    const hash = window.location.hash || '';
+    if (!hash.includes('join=')) return false;
+
+    const match = hash.match(/join=([^&]+)/);
+    if (!match || !match[1]) return false;
+
+    const shareToken = decodeURIComponent(match[1]).trim();
     try {
-      const data = await fetchApi<{ success: boolean; bins: Bin[] }>('/api/bins');
-      if (data.success && Array.isArray(data.bins)) {
-        setUserBins(data.bins);
+      const res = await fetchApi<{ success: boolean; bin: Bin; message?: string }>('/api/bins/join-by-share', {
+        method: 'POST',
+        body: JSON.stringify({ shareToken }),
+      });
+
+      if (res.success && res.bin) {
+        setBin(res.bin);
+        localStorage.setItem('last_bin_id', res.bin.id);
+        window.location.hash = res.bin.id;
+        await fetchUserBinsAndSelect(res.bin.id);
+        return true;
       }
+    } catch (e: any) {
+      alert('加入协作频道失败: ' + (e.message || '邀请口令无效或已过期'));
+    }
+    return false;
+  };
 
-      // 选定频道：优先从 URL hash 读取，其次从 localStorage，最后选第一个或新建
-      const hashBin = window.location.hash.replace('#', '').trim();
-      const storedBin = localStorage.getItem('last_bin_id');
-      const targetBinId = hashBin || storedBin;
+  // 加载用户所属所有频道 (我的频道 + 协作频道) 并初始化选定频道
+  const fetchUserBinsAndSelect = async (overrideSelectBinId?: string) => {
+    try {
+      const data = await fetchApi<{
+        success: boolean;
+        myBins: Bin[];
+        sharedBins: Bin[];
+        bins: Bin[];
+      }>('/api/bins');
 
-      if (targetBinId) {
-        await loadBin(targetBinId);
-      } else if (data.bins && data.bins.length > 0) {
-        await loadBin(data.bins[0].id);
-      } else {
-        await createNewBin();
+      if (data.success) {
+        setMyBins(data.myBins || []);
+        setSharedBins(data.sharedBins || []);
+        const all = data.bins || [...(data.myBins || []), ...(data.sharedBins || [])];
+        setUserBins(all);
+
+        // 选定频道：优先从传参、URL hash、localStorage、现有列表第一个或新建
+        const hashBin = window.location.hash.replace('#', '').trim();
+        const storedBin = localStorage.getItem('last_bin_id');
+        const targetBinId = overrideSelectBinId || (hashBin && !hashBin.startsWith('join=') ? hashBin : null) || storedBin;
+
+        if (targetBinId) {
+          await loadBin(targetBinId);
+        } else if (all.length > 0) {
+          await loadBin(all[0].id);
+        } else {
+          await createNewBin();
+        }
       }
     } catch {
       await initBinWithoutAuth();
@@ -143,11 +215,11 @@ export default function App() {
   const initBinWithoutAuth = async () => {
     const hashBin = window.location.hash.replace('#', '').trim();
     const storedBin = localStorage.getItem('last_bin_id');
-    const binId = hashBin || storedBin;
+    const binId = (hashBin && !hashBin.startsWith('join=')) ? hashBin : storedBin;
     if (binId) {
-      loadBin(binId);
+      await loadBin(binId);
     } else {
-      createNewBin();
+      await createNewBin();
     }
   };
 
@@ -160,11 +232,24 @@ export default function App() {
         localStorage.setItem('last_bin_id', data.bin.id);
         window.location.hash = data.bin.id;
         fetchRequests(data.bin.id);
+        fetchActiveBinMembers(data.bin.id);
       } else {
         createNewBin();
       }
     } catch {
       createNewBin();
+    }
+  };
+
+  // 加载当前活跃频道的成员列表（用于 Header 协作头像堆叠）
+  const fetchActiveBinMembers = async (binId: string) => {
+    try {
+      const data = await fetchApi<{ success: boolean; members: BinMember[] }>(`/api/bins/${binId}/members`);
+      if (data.success && Array.isArray(data.members)) {
+        setBinMembers(data.members);
+      }
+    } catch {
+      setBinMembers([]);
     }
   };
 
@@ -176,13 +261,67 @@ export default function App() {
         setBin(data.bin);
         localStorage.setItem('last_bin_id', data.bin.id);
         window.location.hash = data.bin.id;
+        setMyBins((prev) => [data.bin, ...prev.filter((b) => b.id !== data.bin.id)]);
         setUserBins((prev) => [data.bin, ...prev.filter((b) => b.id !== data.bin.id)]);
         setRequests([]);
         setSelectedRequest(null);
+        setBinMembers([]);
       }
     } catch (e) {
       console.error('Failed to create bin:', e);
     }
+  };
+
+  // 删除频道
+  const handleDeleteBin = async (binId: string) => {
+    try {
+      await fetchApi(`/api/bins/${binId}`, { method: 'DELETE' });
+      const remainingMyBins = myBins.filter((b) => b.id !== binId);
+      const remainingAll = userBins.filter((b) => b.id !== binId);
+      setMyBins(remainingMyBins);
+      setUserBins(remainingAll);
+
+      if (bin?.id === binId) {
+        if (remainingAll.length > 0) {
+          await loadBin(remainingAll[0].id);
+        } else {
+          await createNewBin();
+        }
+      }
+    } catch (e: any) {
+      alert('删除频道失败: ' + (e.message || '请重试'));
+    }
+  };
+
+  // 快捷重命名频道
+  const handleRenameBin = async (binId: string, newName: string) => {
+    try {
+      const data = await fetchApi<{ success: boolean; bin: Bin }>(`/api/bins/${binId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: newName }),
+      });
+      if (data.success && data.bin) {
+        setBin(data.bin);
+        setMyBins((prev) => prev.map((b) => (b.id === data.bin.id ? data.bin : b)));
+        setUserBins((prev) => prev.map((b) => (b.id === data.bin.id ? data.bin : b)));
+      }
+    } catch (e: any) {
+      alert('重命名频道失败: ' + (e.message || '请重试'));
+    }
+  };
+
+  // 重置分享口令
+  const handleResetShareToken = async (): Promise<string> => {
+    if (!bin) throw new Error('当前未选中频道');
+    const data = await fetchApi<{ success: boolean; share_token: string }>(
+      `/api/bins/${bin.id}/reset-share-token`,
+      { method: 'POST' }
+    );
+    if (data.success && data.share_token) {
+      setBin((prev) => (prev ? { ...prev, share_token: data.share_token } : null));
+      return data.share_token;
+    }
+    throw new Error('重置口令失败');
   };
 
   // 获取请求列表
@@ -210,9 +349,12 @@ export default function App() {
       eventSourceRef.current.close();
     }
 
-    const streamUrl = authToken 
-      ? `/api/bins/${bin.id}/stream?token=${encodeURIComponent(authToken)}`
-      : `/api/bins/${bin.id}/stream`;
+    let streamUrl = `/api/bins/${bin.id}/stream`;
+    if (authToken) {
+      streamUrl += `?token=${encodeURIComponent(authToken)}`;
+    } else if (bin.share_token) {
+      streamUrl += `?share_token=${encodeURIComponent(bin.share_token)}`;
+    }
 
     const sse = new EventSource(streamUrl);
     eventSourceRef.current = sse;
@@ -222,6 +364,7 @@ export default function App() {
     });
 
     sse.addEventListener('webhook', (e: MessageEvent) => {
+      if (isStreamPausedRef.current) return;
       try {
         const record: WebhookRecord = JSON.parse(e.data);
         setRequests((prev) => {
@@ -242,7 +385,9 @@ export default function App() {
 
     // 保底策略：每 3 秒做一次轻量轮询，确保网络波动断开时依然能收到数据
     const pollInterval = setInterval(() => {
-      fetchRequests(bin.id);
+      if (!isStreamPausedRef.current) {
+        fetchRequests(bin.id);
+      }
     }, 3000);
 
     return () => {
@@ -250,6 +395,25 @@ export default function App() {
       clearInterval(pollInterval);
     };
   }, [bin?.id, authToken]);
+
+  // 导出当前频道所有抓包记录为 JSON 文件
+  const handleExportJson = () => {
+    if (!bin || requests.length === 0) return;
+    const exportData = {
+      binId: bin.id,
+      binName: bin.name || `Bin ${bin.id}`,
+      exportedAt: new Date().toISOString(),
+      totalRequests: requests.length,
+      requests,
+    };
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(exportData, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', dataStr);
+    downloadAnchor.setAttribute('download', `webhook_${bin.id}_${Date.now()}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
 
   // 全域退出登录
   const handleLogout = async () => {
@@ -265,21 +429,6 @@ export default function App() {
     }
   };
 
-  // 本地开发模拟登录
-  const handleDevLogin = async () => {
-    try {
-      const data = await fetchApi<{ user: User; token: string }>('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ username: 'local_dev' }),
-      });
-      setUser(data.user);
-      setAuthToken(data.token);
-      await fetchUserBinsAndSelect();
-    } catch (e: any) {
-      alert('登录失败: ' + e.message);
-    }
-  };
-
   // 清空历史请求
   const handleClearRequests = async () => {
     if (!bin) return;
@@ -289,8 +438,8 @@ export default function App() {
       await fetchApi(`/api/bins/${bin.id}/requests`, { method: 'DELETE' });
       setRequests([]);
       setSelectedRequest(null);
-    } catch (e) {
-      console.error('Failed to clear requests:', e);
+    } catch (e: any) {
+      alert('清空请求失败: ' + e.message);
     }
   };
 
@@ -304,8 +453,8 @@ export default function App() {
         const remaining = requests.filter((r) => r.id !== id);
         setSelectedRequest(remaining.length > 0 ? remaining[0] : null);
       }
-    } catch (e) {
-      console.error('Failed to delete request:', e);
+    } catch (e: any) {
+      alert('删除请求失败: ' + e.message);
     }
   };
 
@@ -319,6 +468,7 @@ export default function App() {
       });
       if (data.success && data.bin) {
         setBin(data.bin);
+        setMyBins((prev) => prev.map((b) => (b.id === data.bin.id ? data.bin : b)));
         setUserBins((prev) => prev.map((b) => (b.id === data.bin.id ? data.bin : b)));
       }
     } catch (e: any) {
@@ -332,6 +482,35 @@ export default function App() {
     setIsReplayOpen(true);
   };
 
+  // 左右拖拽调整分栏宽度
+  const handleMouseDownResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      const newWidth = Math.max(260, Math.min(600, startWidth + deltaX));
+      setSidebarWidth(newWidth);
+      localStorage.setItem('sidebar_width', String(newWidth));
+    };
+
+    const onMouseUp = () => {
+      setIsResizing(false);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
+  const canEdit = bin ? (bin.role === 'owner' || bin.role === 'editor' || !bin.user_id) : true;
+  const currentWebhookUrl = bin
+    ? `${typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') ? window.location.origin : 'https://webhook.b1uegrey.xyz'}/bin/${bin.id}`
+    : '';
+
   if (authLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-screen w-screen bg-slate-950 text-slate-100">
@@ -342,37 +521,74 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 select-none">
       {/* 顶部导航 */}
       <Header
         bin={bin}
         user={user}
-        userBins={userBins}
+        myBins={myBins}
+        sharedBins={sharedBins}
+        members={binMembers}
         isConnected={isConnected}
         onSelectBin={(binId) => loadBin(binId)}
         onNewBin={createNewBin}
+        onDeleteBin={handleDeleteBin}
+        onRenameBin={handleRenameBin}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenForward={() => setIsForwardOpen(true)}
+        onOpenShare={() => setIsShareOpen(true)}
         onClearRequests={handleClearRequests}
         onLogout={handleLogout}
         ssoAuthUrl={ssoAuthUrl}
         totalRequests={requests.length}
       />
 
-      {/* 主体两栏视图 */}
-      <main className="flex-1 flex overflow-hidden">
-        <RequestList
-          requests={requests}
-          selectedId={selectedRequest?.id || null}
-          onSelect={(req) => setSelectedRequest(req)}
-          webhookUrl={bin ? `https://webhook.b1uegrey.xyz/bin/${bin.id}` : ''}
-        />
+      {/* 主体两栏视图（支持拖拽分栏与移动端自适应抽屉） */}
+      <main className="flex-1 flex overflow-hidden relative select-text">
+        {/* 左侧列表 */}
+        {(!isMobile || !selectedRequest) && (
+          <div 
+            style={{ width: isMobile ? '100%' : `${sidebarWidth}px` }} 
+            className="flex-shrink-0 h-full overflow-hidden"
+          >
+            <RequestList
+              requests={requests}
+              selectedId={selectedRequest?.id || null}
+              onSelect={(req) => setSelectedRequest(req)}
+              webhookUrl={currentWebhookUrl}
+              isPaused={isStreamPaused}
+              onTogglePause={() => setIsStreamPaused((prev) => !prev)}
+              onExportJson={handleExportJson}
+            />
+          </div>
+        )}
 
-        <RequestDetail
-          request={selectedRequest}
-          onDelete={handleDeleteRequest}
-          onOpenReplay={handleOpenReplay}
-        />
+        {/* 桌面端宽度调节拖拽中缝 */}
+        {!isMobile && (
+          <div
+            onMouseDown={handleMouseDownResize}
+            className={`w-1 cursor-col-resize hover:bg-indigo-500 transition-colors flex-shrink-0 relative group z-10 ${
+              isResizing ? 'bg-indigo-500' : 'bg-slate-800'
+            }`}
+            title="左右拖动调整分栏宽度"
+          >
+            <div className="absolute inset-y-0 -left-1 -right-1" />
+          </div>
+        )}
+
+        {/* 右侧详情 */}
+        {(!isMobile || selectedRequest) && (
+          <div className="flex-1 h-full min-w-0 overflow-hidden">
+            <RequestDetail
+              request={selectedRequest}
+              onDelete={handleDeleteRequest}
+              onOpenReplay={handleOpenReplay}
+              canEdit={canEdit}
+              isMobile={isMobile}
+              onBackToList={() => setSelectedRequest(null)}
+            />
+          </div>
+        )}
       </main>
 
       {/* 内网转发客户端弹窗 */}
@@ -389,6 +605,19 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         bin={bin}
         onSave={handleSaveSettings}
+      />
+
+      {/* 频道协作与分享弹窗 */}
+      <ShareModal
+        isOpen={isShareOpen}
+        onClose={() => setIsShareOpen(false)}
+        bin={bin}
+        currentUser={user}
+        onResetShareToken={handleResetShareToken}
+        onMembersChange={() => {
+          fetchUserBinsAndSelect(bin?.id);
+          if (bin?.id) fetchActiveBinMembers(bin.id);
+        }}
       />
 
       {/* 请求重放 / 转发弹窗 */}

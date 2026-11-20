@@ -10,21 +10,29 @@ import {
   Code,
   Calendar,
   Globe,
-  Monitor
+  Monitor,
+  ArrowLeft
 } from 'lucide-react';
 import { WebhookRecord } from '../types';
 import { getMethodColor, generateCurl } from '../lib/utils';
+import { JsonViewer } from './JsonViewer';
 
 interface RequestDetailProps {
   request: WebhookRecord | null;
   onDelete: (id: string) => void;
   onOpenReplay: (req: WebhookRecord) => void;
+  canEdit?: boolean;
+  onBackToList?: () => void;
+  isMobile?: boolean;
 }
 
 export const RequestDetail: React.FC<RequestDetailProps> = ({
   request,
   onDelete,
   onOpenReplay,
+  canEdit = true,
+  onBackToList,
+  isMobile = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'payload' | 'headers' | 'query' | 'curl'>('payload');
   const [copiedType, setCopiedType] = useState<string | null>(null);
@@ -83,6 +91,16 @@ export const RequestDetail: React.FC<RequestDetailProps> = ({
       <div className="border-b border-slate-800 bg-slate-900/60 p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
+            {isMobile && onBackToList && (
+              <button
+                onClick={onBackToList}
+                className="flex items-center gap-1 text-xs text-slate-300 hover:text-white px-2 py-1 rounded bg-slate-800 border border-slate-700 flex-shrink-0"
+                title="返回请求列表"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>返回</span>
+              </button>
+            )}
             <span
               className={`text-xs font-bold px-2 py-0.5 rounded border font-mono tracking-wide ${getMethodColor(
                 request.method
@@ -96,14 +114,16 @@ export const RequestDetail: React.FC<RequestDetailProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => onOpenReplay(request)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition"
-              title="重放/转发到本地或指定地址"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>重放请求</span>
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => onOpenReplay(request)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition"
+                title="重放/转发到本地或指定地址"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>重放请求</span>
+              </button>
+            )}
 
             <button
               onClick={() => copyToClipboard(curlCommand, 'curl')}
@@ -114,13 +134,15 @@ export const RequestDetail: React.FC<RequestDetailProps> = ({
               <span>{copiedType === 'curl' ? '已复制' : '复制 cURL'}</span>
             </button>
 
-            <button
-              onClick={() => onDelete(request.id)}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-950/30 border border-slate-700 transition"
-              title="删除此记录"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => onDelete(request.id)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-950/30 border border-slate-700 transition"
+                title="删除此记录"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -197,15 +219,6 @@ export const RequestDetail: React.FC<RequestDetailProps> = ({
             <span>cURL 命令</span>
           </button>
         </div>
-
-        {activeTab === 'payload' && request.body && isJson && (
-          <button
-            onClick={() => setIsRawPayload(!isRawPayload)}
-            className="text-xs text-indigo-400 hover:text-indigo-300 font-mono underline cursor-pointer"
-          >
-            {isRawPayload ? '查看格式化 JSON' : '查看原始 Raw'}
-          </button>
-        )}
       </div>
 
       {/* 选项卡内容区 */}
@@ -213,25 +226,7 @@ export const RequestDetail: React.FC<RequestDetailProps> = ({
         {/* 1. Payload 视图 */}
         {activeTab === 'payload' && (
           <div className="h-full flex flex-col">
-            {!request.body ? (
-              <div className="text-slate-500 text-xs italic p-4 text-center">
-                (该请求没有包含 Body 报文)
-              </div>
-            ) : (
-              <div className="relative flex-1">
-                <button
-                  onClick={() => copyToClipboard(request.body || '', 'body')}
-                  className="absolute right-3 top-3 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700 flex items-center gap-1 transition"
-                >
-                  {copiedType === 'body' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                  <span>{copiedType === 'body' ? '已复制' : '复制 Body'}</span>
-                </button>
-
-                <pre className="p-4 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-indigo-200 overflow-auto whitespace-pre-wrap leading-relaxed max-h-[calc(100vh-280px)]">
-                  {isRawPayload ? request.body : formattedBody}
-                </pre>
-              </div>
-            )}
+            <JsonViewer content={request.body || ''} isJson={isJson} />
           </div>
         )}
 

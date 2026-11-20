@@ -1,7 +1,7 @@
 import { Context, Next } from 'hono';
 import { getCookie, deleteCookie } from 'hono/cookie';
 import { sign, verify } from 'hono/jwt';
-import { Env, UserSession } from './types';
+import { Env, UserSession, Bin } from './types';
 
 export const DEFAULT_JWT_SECRET = 'b1uegrey_shared_sso_secret_2026_xyz';
 
@@ -51,7 +51,7 @@ export async function createSessionToken(user: UserSession, secret?: string): Pr
   const payload = {
     sub: user.id,
     username: user.username,
-    nickname: user.nickname,
+    nickname: user.nickname || '',
     role: user.role || 'user',
     status: user.status || 'active',
     apps: user.allowedApps || ['*'],
@@ -101,6 +101,30 @@ export function extractCandidateTokens(c: Context): string[] {
   }
 
   return candidates;
+}
+
+// 解析可选用户 (不抛出 401)
+export async function getOptionalUser(c: Context<any>): Promise<UserSession | null> {
+  const candidates = extractCandidateTokens(c);
+  if (candidates.length === 0) return null;
+
+  const jwtSecret = c.env.JWT_SECRET || DEFAULT_JWT_SECRET;
+  for (const token of candidates) {
+    try {
+      const payload: any = await verify(token, jwtSecret, 'HS256');
+      if (payload && payload.sub) {
+        return {
+          id: payload.sub as string,
+          username: (payload.username as string) || '',
+          nickname: (payload.nickname as string) || '',
+          role: (payload.role as string) || 'user',
+          status: (payload.status as string) || 'active',
+          allowedApps: Array.isArray(payload.apps) ? (payload.apps as string[]) : ['*'],
+        };
+      }
+    } catch {}
+  }
+  return null;
 }
 
 // 鉴权中间件 (支持多 Cookie 容错重试、Authorization 标头、或 URL Query token)
@@ -163,4 +187,61 @@ export async function requireAuth(
   c.set('token', workingToken);
 
   await next();
+}
+
+// 检查当前用户对指定 Bin 的权限
+// 角色层级: owner > editor > viewer > none
+export async function getBinUserRole(
+  db: D1Database,
+  bin: Bin,
+  user: UserSession | null,
+  shareToken?: string | null
+): Promise<{ canView: boolean; canEdit: boolean; isOwner: boolean; role: 'owner' | 'editor' | 'viewer' | 'none' }> {
+  // 1. 如果带有合法的 share_token，具有只读权限
+  if (shareToken && bin.share_token && bin.share_token === shareToken) {
+    return { canView: true, canEdit: false, isOwner: false, role: 'viewer' };
+  }
+
+  // 2. 如果频道没有所有者（历史遗留公开频道），所有人拥有完全控制权
+  if (!bin.user_id) {
+    return { canView: true, canEdit: true, isOwner: true, role: 'owner' };
+  }
+
+  // 3. 用户未登录
+  if (!user) {
+    if (bin.is_public === 1) {
+      return { canView: true, canEdit: false, isOwner: false, role: 'viewer' };
+    }
+    return { canView: false, canEdit: false, isOwner: false, role: 'none' };
+  }
+
+  // 4. 用户是频道创建者/所有者
+  if (bin.user_id === user.id) {
+    return { canView: true, canEdit: true, isOwner: true, role: 'owner' };
+  }
+
+  // 5. 检查协作成员表 bin_members
+  try {
+    const member = await db
+      .prepare('SELECT role FROM bin_members WHERE bin_id = ? AND user_id = ?')
+      .bind(bin.id, user.id)
+      .first<{ role: string }>();
+
+    if (member) {
+      if (member.role === 'owner') {
+        return { canView: true, canEdit: true, isOwner: true, role: 'owner' };
+      }
+      if (member.role === 'editor') {
+        return { canView: true, canEdit: true, isOwner: false, role: 'editor' };
+      }
+      return { canView: true, canEdit: false, isOwner: false, role: 'viewer' };
+    }
+  } catch {}
+
+  // 6. 如果频道设置为公开
+  if (bin.is_public === 1) {
+    return { canView: true, canEdit: false, isOwner: false, role: 'viewer' };
+  }
+
+  return { canView: false, canEdit: false, isOwner: false, role: 'none' };
 }

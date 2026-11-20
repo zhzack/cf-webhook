@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { Env, Bin, WebhookRecord, UserSession } from './types';
+import { Env, Bin, WebhookRecord, UserSession, BinMember } from './types';
 import { forwardScript } from './forwardScript';
-import { requireAuth } from './auth';
+import { requireAuth, getOptionalUser, getBinUserRole } from './auth';
 import { authRouter } from './routes/auth';
 import { tunnelRouter } from './routes/tunnel';
 
@@ -26,12 +26,32 @@ app.get('/forward.mjs', (c) => {
   });
 });
 
-// 辅助函数：安全兼容新增字段 user_id
+// 辅助函数：安全兼容历史表结构变更
 let schemaEnsured = false;
 async function ensureSchema(db: D1Database) {
   if (schemaEnsured) return;
   try {
     await db.prepare('ALTER TABLE bins ADD COLUMN user_id TEXT').run();
+  } catch {}
+  try {
+    await db.prepare('ALTER TABLE bins ADD COLUMN description TEXT').run();
+  } catch {}
+  try {
+    await db.prepare('ALTER TABLE bins ADD COLUMN share_token TEXT').run();
+  } catch {}
+  try {
+    await db.prepare('ALTER TABLE bins ADD COLUMN is_public INTEGER DEFAULT 0').run();
+  } catch {}
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS bin_members (
+        bin_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'viewer',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (bin_id, user_id)
+      )
+    `).run();
   } catch {}
   schemaEnsured = true;
 }
@@ -48,8 +68,13 @@ function generateBinId(): string {
   return result;
 }
 
-// 辅助函数：根据 binId 查找或隐式创建 Bin，并关联所有者用户
-async function getOrCreateBin(db: D1Database, binId: string, userId?: string): Promise<Bin> {
+// 辅助函数：生成协作分享口令 (16位随机字符)
+function generateShareToken(): string {
+  return 'st_' + crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+}
+
+// 辅助函数：根据 binId 查找或隐式创建 Bin，并关联所有者用户与生成分享口令
+async function getOrCreateBin(db: D1Database, binId: string, userId?: string, name?: string): Promise<Bin> {
   await ensureSchema(db);
   const existing = await db
     .prepare('SELECT * FROM bins WHERE id = ?')
@@ -57,45 +82,97 @@ async function getOrCreateBin(db: D1Database, binId: string, userId?: string): P
     .first<Bin>();
 
   if (existing) {
+    let needUpdate = false;
+    let newUserId = existing.user_id;
+    let newShareToken = existing.share_token;
+
     if (!existing.user_id && userId) {
+      newUserId = userId;
+      needUpdate = true;
+    }
+    if (!existing.share_token) {
+      newShareToken = generateShareToken();
+      needUpdate = true;
+    }
+
+    if (needUpdate) {
       try {
-        await db.prepare('UPDATE bins SET user_id = ? WHERE id = ?').bind(userId, binId).run();
-        existing.user_id = userId;
+        await db
+          .prepare('UPDATE bins SET user_id = ?, share_token = ? WHERE id = ?')
+          .bind(newUserId, newShareToken, binId)
+          .run();
+        existing.user_id = newUserId;
+        existing.share_token = newShareToken;
       } catch {}
     }
+
+    // 确保创建者在 bin_members 表中有记录
+    if (existing.user_id) {
+      try {
+        await db
+          .prepare(
+            `INSERT INTO bin_members (bin_id, user_id, role, created_at)
+             VALUES (?, ?, 'owner', ?)
+             ON CONFLICT(bin_id, user_id) DO NOTHING`
+          )
+          .bind(existing.id, existing.user_id, existing.created_at || Date.now())
+          .run();
+      } catch {}
+    }
+
     return existing;
   }
 
   const now = Date.now();
+  const shareToken = generateShareToken();
   const newBin: Bin = {
     id: binId,
     user_id: userId || null,
-    name: `Bin ${binId}`,
+    name: name || `Bin ${binId}`,
+    description: '',
     response_status: 200,
     response_content_type: 'application/json',
     response_body: JSON.stringify({ status: 'ok', binId }),
     feishu_auto_challenge: 1,
+    share_token: shareToken,
+    is_public: 0,
     created_at: now,
     updated_at: now,
   };
 
   await db
     .prepare(
-      `INSERT INTO bins (id, user_id, name, response_status, response_content_type, response_body, feishu_auto_challenge, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO bins (id, user_id, name, description, response_status, response_content_type, response_body, feishu_auto_challenge, share_token, is_public, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       newBin.id,
       newBin.user_id,
       newBin.name,
+      newBin.description,
       newBin.response_status,
       newBin.response_content_type,
       newBin.response_body,
       newBin.feishu_auto_challenge,
+      newBin.share_token,
+      newBin.is_public,
       newBin.created_at,
       newBin.updated_at
     )
     .run();
+
+  // 若关联了用户，同步写入 bin_members 作为 owner
+  if (userId) {
+    try {
+      await db
+        .prepare(
+          `INSERT INTO bin_members (bin_id, user_id, role, created_at)
+           VALUES (?, ?, 'owner', ?)`
+        )
+        .bind(binId, userId, now)
+        .run();
+    } catch {}
+  }
 
   return newBin;
 }
@@ -116,68 +193,197 @@ api.route('/auth', authRouter);
 // TCP 隧道路由 (/api/tunnel)
 api.route('/', tunnelRouter);
 
-// 获取当前登录用户可访问的所有 Bin 列表 (需要 SSO 登录)
+// 获取当前登录用户可访问的所有频道列表（我的频道 vs 与我协作）
 api.get('/bins', requireAuth, async (c) => {
   const user = c.get('user');
   await ensureSchema(c.env.DB);
-  const results = await c.env.DB
+
+  // 1. 我的频道 (创建者是我，或历史遗留未绑定所有者的频道)
+  const myBinsRes = await c.env.DB
     .prepare(
-      `SELECT * FROM bins 
-       WHERE user_id = ? OR user_id IS NULL 
-       ORDER BY updated_at DESC 
+      `SELECT b.*, 
+        (SELECT COUNT(*) FROM requests r WHERE r.bin_id = b.id) as request_count,
+        'owner' as role
+       FROM bins b 
+       WHERE b.user_id = ? OR b.user_id IS NULL 
+       ORDER BY b.updated_at DESC 
        LIMIT 50`
     )
     .bind(user.id)
     .all<Bin>();
 
+  // 2. 与我协作的频道 (通过 bin_members 被授权，且创建者不是我)
+  const sharedBinsRes = await c.env.DB
+    .prepare(
+      `SELECT b.*, 
+        bm.role as role,
+        u.nickname as owner_name,
+        (SELECT COUNT(*) FROM requests r WHERE r.bin_id = b.id) as request_count
+       FROM bin_members bm
+       JOIN bins b ON bm.bin_id = b.id
+       LEFT JOIN users u ON b.user_id = u.id
+       WHERE bm.user_id = ? AND (b.user_id != ? OR b.user_id IS NULL)
+       ORDER BY b.updated_at DESC
+       LIMIT 50`
+    )
+    .bind(user.id, user.id)
+    .all<Bin>();
+
+  const myBins = myBinsRes.results || [];
+  const sharedBins = sharedBinsRes.results || [];
+
   return c.json({
     success: true,
-    bins: results.results || [],
+    myBins,
+    sharedBins,
+    bins: [...myBins, ...sharedBins],
   });
 });
 
-// 创建新 Bin (需要 SSO 登录)
+// 创建新频道 (需要登录)
 api.post('/bins', requireAuth, async (c) => {
   const user = c.get('user');
+  const body = await c.req.json().catch(() => ({}));
   const binId = generateBinId();
-  const bin = await getOrCreateBin(c.env.DB, binId, user.id);
-  return c.json({ success: true, bin });
+  const name = body.name ? String(body.name).trim() : `Bin ${binId}`;
+  const bin = await getOrCreateBin(c.env.DB, binId, user.id, name);
+  return c.json({ success: true, bin: { ...bin, role: 'owner' } });
 });
 
-// 获取指定 Bin 的配置信息 (需要 SSO 登录)
-api.get('/bins/:binId', requireAuth, async (c) => {
+// 通过分享口令加入频道 (协作邀请链接)
+api.post('/bins/join-by-share', requireAuth, async (c) => {
   const user = c.get('user');
-  const binId = c.req.param('binId') || '';
-  const bin = await getOrCreateBin(c.env.DB, binId, user.id);
-  return c.json({ success: true, bin });
+  const body = await c.req.json().catch(() => ({}));
+  const shareToken = (body.shareToken || '').trim();
+
+  if (!shareToken) {
+    return c.json({ error: '请输入有效的分享口令' }, 400);
+  }
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE share_token = ?')
+    .bind(shareToken)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '分享口令不存在或已失效' }, 404);
+  }
+
+  // 若已经是所有者
+  if (bin.user_id === user.id) {
+    return c.json({ success: true, bin: { ...bin, role: 'owner' }, message: '您是该频道的所有者' });
+  }
+
+  // 检查是否已是成员
+  const existingMember = await c.env.DB
+    .prepare('SELECT role FROM bin_members WHERE bin_id = ? AND user_id = ?')
+    .bind(bin.id, user.id)
+    .first<{ role: string }>();
+
+  if (!existingMember) {
+    // 默认加入为 viewer 角色
+    await c.env.DB
+      .prepare(
+        `INSERT INTO bin_members (bin_id, user_id, role, created_at)
+         VALUES (?, ?, 'viewer', ?)`
+      )
+      .bind(bin.id, user.id, Date.now())
+      .run();
+  }
+
+  const role = existingMember ? existingMember.role : 'viewer';
+  return c.json({
+    success: true,
+    bin: { ...bin, role },
+    message: '成功加入频道协作',
+  });
 });
 
-// 更新指定 Bin 的自定义响应规则 (需要 SSO 登录)
+// 获取指定 Bin 的配置信息及当前用户权限
+api.get('/bins/:binId', async (c) => {
+  const binId = c.req.param('binId') || '';
+  const shareToken = c.req.query('share_token') || c.req.header('x-share-token');
+  const user = await getOptionalUser(c);
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在或已被删除' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user, shareToken);
+  if (!perm.canView) {
+    return c.json({ error: '无权访问该频道，请登录或获取分享口令' }, 403);
+  }
+
+  return c.json({
+    success: true,
+    bin: {
+      ...bin,
+      role: perm.role,
+    },
+  });
+});
+
+// 更新指定 Bin 的配置（名称、Mock响应、飞书自动应答等，需编辑权限）
 api.put('/bins/:binId', requireAuth, async (c) => {
+  const user = c.get('user');
   const binId = c.req.param('binId');
   const body = await c.req.json().catch(() => ({}));
   const now = Date.now();
 
-  const response_status = typeof body.response_status === 'number' ? body.response_status : 200;
-  const response_content_type = body.response_content_type || 'application/json';
-  const response_body = body.response_body ?? '{"status":"ok"}';
-  const feishu_auto_challenge = body.feishu_auto_challenge ? 1 : 0;
-  const name = body.name || `Bin ${binId}`;
-
   await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  if (!perm.canEdit) {
+    return c.json({ error: '您没有编辑该频道的权限（只读权限无法修改配置）' }, 403);
+  }
+
+  const name = body.name !== undefined ? String(body.name) : bin.name;
+  const description = body.description !== undefined ? String(body.description) : bin.description;
+  const response_status = typeof body.response_status === 'number' ? body.response_status : (bin.response_status || 200);
+  const response_content_type = body.response_content_type || bin.response_content_type || 'application/json';
+  const response_body = body.response_body !== undefined ? body.response_body : (bin.response_body ?? '{"status":"ok"}');
+  const feishu_auto_challenge = body.feishu_auto_challenge !== undefined ? (body.feishu_auto_challenge ? 1 : 0) : bin.feishu_auto_challenge;
+  const is_public = (perm.isOwner && body.is_public !== undefined) ? (body.is_public ? 1 : 0) : (bin.is_public || 0);
+
   await c.env.DB
     .prepare(
-      `INSERT INTO bins (id, name, response_status, response_content_type, response_body, feishu_auto_challenge, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name,
-         response_status = excluded.response_status,
-         response_content_type = excluded.response_content_type,
-         response_body = excluded.response_body,
-         feishu_auto_challenge = excluded.feishu_auto_challenge,
-         updated_at = excluded.updated_at`
+      `UPDATE bins SET
+         name = ?,
+         description = ?,
+         response_status = ?,
+         response_content_type = ?,
+         response_body = ?,
+         feishu_auto_challenge = ?,
+         is_public = ?,
+         updated_at = ?
+       WHERE id = ?`
     )
-    .bind(binId, name, response_status, response_content_type, response_body, feishu_auto_challenge, now, now)
+    .bind(
+      name,
+      description,
+      response_status,
+      response_content_type,
+      response_body,
+      feishu_auto_challenge,
+      is_public,
+      now,
+      binId
+    )
     .run();
 
   const updated = await c.env.DB
@@ -185,14 +391,231 @@ api.put('/bins/:binId', requireAuth, async (c) => {
     .bind(binId)
     .first<Bin>();
 
-  return c.json({ success: true, bin: updated });
+  return c.json({ success: true, bin: { ...updated, role: perm.role } });
 });
 
-// 获取请求历史列表 (默认最新 100 条，需要 SSO 登录)
-api.get('/bins/:binId/requests', requireAuth, async (c) => {
+// 重置频道的分享口令 (仅 Owner 可操作)
+api.post('/bins/:binId/reset-share-token', requireAuth, async (c) => {
+  const user = c.get('user');
   const binId = c.req.param('binId');
-  const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 200);
 
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  if (!perm.isOwner) {
+    return c.json({ error: '仅频道创建者可重置分享口令' }, 403);
+  }
+
+  const newShareToken = generateShareToken();
+  await c.env.DB
+    .prepare('UPDATE bins SET share_token = ?, updated_at = ? WHERE id = ?')
+    .bind(newShareToken, Date.now(), binId)
+    .run();
+
+  return c.json({ success: true, share_token: newShareToken });
+});
+
+// 删除频道 (仅 Owner 可删除，级联删除请求历史与成员表)
+api.delete('/bins/:binId', requireAuth, async (c) => {
+  const user = c.get('user');
+  const binId = c.req.param('binId');
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  if (!perm.isOwner) {
+    return c.json({ error: '仅频道创建者可删除该频道' }, 403);
+  }
+
+  // 级联删除请求与成员
+  await c.env.DB.prepare('DELETE FROM requests WHERE bin_id = ?').bind(binId).run();
+  await c.env.DB.prepare('DELETE FROM bin_members WHERE bin_id = ?').bind(binId).run();
+  await c.env.DB.prepare('DELETE FROM bins WHERE id = ?').bind(binId).run();
+
+  return c.json({ success: true });
+});
+
+// 获取频道成员列表
+api.get('/bins/:binId/members', requireAuth, async (c) => {
+  const user = c.get('user');
+  const binId = c.req.param('binId');
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  if (!perm.canView) {
+    return c.json({ error: '无权查看频道成员' }, 403);
+  }
+
+  const membersRes = await c.env.DB
+    .prepare(
+      `SELECT bm.bin_id, bm.user_id, bm.role, bm.created_at, u.username, u.nickname
+       FROM bin_members bm
+       LEFT JOIN users u ON bm.user_id = u.id
+       WHERE bm.bin_id = ?
+       ORDER BY 
+         CASE bm.role 
+           WHEN 'owner' THEN 1 
+           WHEN 'editor' THEN 2 
+           ELSE 3 
+         END, 
+         bm.created_at ASC`
+    )
+    .bind(binId)
+    .all<BinMember>();
+
+  return c.json({
+    success: true,
+    members: membersRes.results || [],
+  });
+});
+
+// 添加或更新频道成员 (仅 Owner 可操作)
+api.post('/bins/:binId/members', requireAuth, async (c) => {
+  const user = c.get('user');
+  const binId = c.req.param('binId');
+  const body = await c.req.json().catch(() => ({}));
+  const username = (body.username || '').trim();
+  const role = body.role === 'editor' ? 'editor' : 'viewer';
+
+  if (!username) {
+    return c.json({ error: '请输入要添加的用户名' }, 400);
+  }
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  if (!perm.isOwner) {
+    return c.json({ error: '仅频道创建者可管理成员' }, 403);
+  }
+
+  // 根据用户名在本地 users 查找目标用户
+  const targetUser = await c.env.DB
+    .prepare('SELECT id, username, nickname FROM users WHERE username = ?')
+    .bind(username)
+    .first<{ id: string; username: string; nickname?: string }>();
+
+  if (!targetUser) {
+    return c.json({
+      error: `未找到用户 "${username}"。请确认该用户名正确，且对方已至少登录过一次平台或认证中心`,
+    }, 404);
+  }
+
+  if (targetUser.id === bin.user_id) {
+    return c.json({ error: '该用户是频道创建者，无需重复添加' }, 400);
+  }
+
+  await c.env.DB
+    .prepare(
+      `INSERT INTO bin_members (bin_id, user_id, role, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(bin_id, user_id) DO UPDATE SET role = excluded.role`
+    )
+    .bind(binId, targetUser.id, role, Date.now())
+    .run();
+
+  return c.json({
+    success: true,
+    member: {
+      bin_id: binId,
+      user_id: targetUser.id,
+      username: targetUser.username,
+      nickname: targetUser.nickname,
+      role,
+      created_at: Date.now(),
+    },
+  });
+});
+
+// 移除频道成员 (Owner 可移除他人，或者协作者自行退出)
+api.delete('/bins/:binId/members/:targetUserId', requireAuth, async (c) => {
+  const user = c.get('user');
+  const binId = c.req.param('binId');
+  const targetUserId = c.req.param('targetUserId');
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  const isSelf = user.id === targetUserId;
+
+  if (!perm.isOwner && !isSelf) {
+    return c.json({ error: '仅所有者可移除成员，或协作者自行退出' }, 403);
+  }
+
+  if (targetUserId === bin.user_id) {
+    return c.json({ error: '无法将所有者从频道中移除' }, 400);
+  }
+
+  await c.env.DB
+    .prepare('DELETE FROM bin_members WHERE bin_id = ? AND user_id = ?')
+    .bind(binId, targetUserId)
+    .run();
+
+  return c.json({ success: true, isSelf });
+});
+
+// 获取请求历史列表 (需查看权限)
+api.get('/bins/:binId/requests', async (c) => {
+  const binId = c.req.param('binId');
+  const shareToken = c.req.query('share_token') || c.req.header('x-share-token');
+  const user = await getOptionalUser(c);
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user, shareToken);
+  if (!perm.canView) {
+    return c.json({ error: '无权查看该频道的请求历史' }, 403);
+  }
+
+  const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 200);
   const results = await c.env.DB
     .prepare(
       `SELECT * FROM requests 
@@ -209,29 +632,83 @@ api.get('/bins/:binId/requests', requireAuth, async (c) => {
   });
 });
 
-// 清空当前 Bin 的所有历史请求 (需要 SSO 登录)
+// 清空当前 Bin 的所有历史请求 (需编辑权限)
 api.delete('/bins/:binId/requests', requireAuth, async (c) => {
+  const user = c.get('user');
   const binId = c.req.param('binId');
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  if (!perm.canEdit) {
+    return c.json({ error: '只读成员无权清空请求' }, 403);
+  }
+
   await c.env.DB
     .prepare('DELETE FROM requests WHERE bin_id = ?')
     .bind(binId)
     .run();
+
   return c.json({ success: true });
 });
 
-// 删除单个请求记录 (需要 SSO 登录)
+// 删除单个请求记录 (需编辑权限)
 api.delete('/bins/:binId/requests/:reqId', requireAuth, async (c) => {
+  const user = c.get('user');
   const binId = c.req.param('binId');
   const reqId = c.req.param('reqId');
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  if (!perm.canEdit) {
+    return c.json({ error: '只读成员无权删除请求' }, 403);
+  }
+
   await c.env.DB
     .prepare('DELETE FROM requests WHERE bin_id = ? AND id = ?')
     .bind(binId, reqId)
     .run();
+
   return c.json({ success: true });
 });
 
-// 请求重放代理 (Replay / Forward，需要 SSO 登录)
+// 请求重放代理 (Replay / Forward，需编辑权限)
 api.post('/bins/:binId/replay', requireAuth, async (c) => {
+  const user = c.get('user');
+  const binId = c.req.param('binId');
+
+  await ensureSchema(c.env.DB);
+  const bin = await c.env.DB
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.json({ error: '频道不存在' }, 404);
+  }
+
+  const perm = await getBinUserRole(c.env.DB, bin, user);
+  if (!perm.canEdit) {
+    return c.json({ error: '只读成员无权发起请求重放' }, 403);
+  }
+
   try {
     const payload = await c.req.json();
     const { targetUrl, method = 'POST', headers = {}, body } = payload;
@@ -273,10 +750,27 @@ api.post('/bins/:binId/replay', requireAuth, async (c) => {
   }
 });
 
-// SSE 实时推送流 (支持浏览器 Cookie 或客户端 Token 鉴权)
-api.get('/bins/:binId/stream', requireAuth, (c) => {
+// SSE 实时推送流 (支持浏览器 Cookie、Token 鉴权或分享口令)
+api.get('/bins/:binId/stream', async (c) => {
   const binId = c.req.param('binId');
+  const shareToken = c.req.query('share_token') || c.req.header('x-share-token');
+  const user = await getOptionalUser(c);
   const db = c.env.DB;
+
+  await ensureSchema(db);
+  const bin = await db
+    .prepare('SELECT * FROM bins WHERE id = ?')
+    .bind(binId)
+    .first<Bin>();
+
+  if (!bin) {
+    return c.text('Bin not found', 404);
+  }
+
+  const perm = await getBinUserRole(db, bin, user, shareToken);
+  if (!perm.canView) {
+    return c.text('Unauthorized: no permission to listen to this bin stream', 403);
+  }
 
   let lastCheckedTime = Date.now() - 5000;
   let isClosed = false;

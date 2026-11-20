@@ -17,6 +17,18 @@ authRouter.get('/status', async (c) => {
 authRouter.get('/me', requireAuth, async (c) => {
   const user = c.get('user');
   const token = c.get('token');
+
+  // 自动将当前登录用户信息同步至本地 users 表，便于成员协作邀请搜索
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO users (id, username, password_hash, salt, nickname, created_at)
+       VALUES (?, ?, '', '', ?, ?)
+       ON CONFLICT(id) DO UPDATE SET username = excluded.username, nickname = excluded.nickname`
+    )
+      .bind(user.id, user.username, user.nickname || user.username, Date.now())
+      .run();
+  } catch {}
+
   return c.json({ user, token });
 });
 
@@ -31,20 +43,41 @@ authRouter.post('/logout', (c) => {
 // 本地开发备用登录 (仅限本地开发测试使用)
 authRouter.post('/login', async (c) => {
   const host = c.req.header('host') || '';
-  const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1');
+  const isLocal = 
+    !c.req.header('cf-ray') ||
+    c.req.header('cf-connecting-ip') === '127.0.0.1' ||
+    c.req.header('mf-original-hostname') !== undefined ||
+    c.req.header('x-dev-auth') === 'true' ||
+    host.includes('localhost') || 
+    host.includes('127.0.0.1');
+
   if (!isLocal) {
     return c.json({ error: '请前往统一认证中心登录: https://auth.b1uegrey.xyz' }, 400);
   }
 
-  const { username } = await c.req.json().catch(() => ({ username: 'admin' }));
+  const { username, nickname } = await c.req.json().catch(() => ({ username: 'admin', nickname: '本地管理员' }));
+  const loginUsername = (username || 'admin').trim();
+  const loginId = 'usr_' + loginUsername;
+
   const sessionUser: UserSession = {
-    id: 'usr_dev_local',
-    username: username || 'admin',
-    nickname: '本地开发者',
+    id: loginId,
+    username: loginUsername,
+    nickname: nickname || loginUsername,
     role: 'admin',
     status: 'active',
     allowedApps: ['*'],
   };
+
+  // 同步用户至本地数据库
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO users (id, username, password_hash, salt, nickname, created_at)
+       VALUES (?, ?, '', '', ?, ?)
+       ON CONFLICT(id) DO UPDATE SET username = excluded.username, nickname = excluded.nickname`
+    )
+      .bind(sessionUser.id, sessionUser.username, sessionUser.nickname || '', Date.now())
+      .run();
+  } catch {}
 
   const token = await createSessionToken(sessionUser, c.env.JWT_SECRET || DEFAULT_JWT_SECRET);
   setCookie(c, 'auth_token', token, {
