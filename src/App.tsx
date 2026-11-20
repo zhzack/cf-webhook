@@ -7,13 +7,15 @@ import { ReplayModal } from './components/ReplayModal';
 import { ForwardModal } from './components/ForwardModal';
 import { ShareModal } from './components/ShareModal';
 import { ApiClient } from './components/ApiClient';
+import { TcpClient } from './components/TcpClient';
+import { NavigationRail, MainNavMode } from './components/NavigationRail';
 import { Bin, WebhookRecord, User, BinMember, OutboundRequestPayload } from './types';
 import { fetchApi } from './api';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
-  const [mainViewMode, setMainViewMode] = useState<'inspector' | 'client'>('inspector');
+  const [mainViewMode, setMainViewMode] = useState<MainNavMode>('inspector');
   const [clientInitialPayload, setClientInitialPayload] = useState<OutboundRequestPayload | null>(null);
   const [myBins, setMyBins] = useState<Bin[]>([]);
   const [sharedBins, setSharedBins] = useState<Bin[]>([]);
@@ -548,85 +550,105 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 select-none">
-      {/* 顶部导航 */}
-      <Header
-        bin={bin}
-        user={user}
-        myBins={myBins}
-        sharedBins={sharedBins}
-        members={binMembers}
-        isConnected={isConnected}
-        onSelectBin={(binId) => loadBin(binId)}
-        onNewBin={createNewBin}
-        onDeleteBin={handleDeleteBin}
-        onRenameBin={handleRenameBin}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 select-none">
+      {/* 最左侧一级主功能导航 Rail */}
+      <NavigationRail
+        activeMode={mainViewMode}
+        onModeChange={setMainViewMode}
         onOpenForward={() => setIsForwardOpen(true)}
-        onOpenShare={() => setIsShareOpen(true)}
-        onClearRequests={handleClearRequests}
+        requestCount={requests.length}
+        user={user}
         onLogout={handleLogout}
-        viewMode={mainViewMode}
-        onViewModeChange={setMainViewMode}
         ssoAuthUrl={ssoAuthUrl}
-        totalRequests={requests.length}
       />
 
-      {/* 主体视图 */}
-      {mainViewMode === 'client' ? (
-        <main className="flex-1 flex overflow-hidden relative select-text">
-          <ApiClient initialPayload={clientInitialPayload} />
-        </main>
-      ) : (
-        /* 主体两栏视图（支持拖拽分栏与移动端自适应抽屉） */
-        <main className="flex-1 flex overflow-hidden relative select-text">
-          {/* 左侧列表 */}
-          {(!isMobile || !selectedRequest) && (
-            <div 
-              style={{ width: isMobile ? '100%' : `${sidebarWidth}px` }} 
-              className="flex-shrink-0 h-full overflow-hidden"
-            >
-              <RequestList
-                requests={requests}
-                selectedId={selectedRequest?.id || null}
-                onSelect={(req) => setSelectedRequest(req)}
-                webhookUrl={currentWebhookUrl}
-                isPaused={isStreamPaused}
-                onTogglePause={() => setIsStreamPaused((prev) => !prev)}
-                onExportJson={handleExportJson}
-              />
-            </div>
-          )}
+      {/* 主工作区 */}
+      <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden">
+        {mainViewMode === 'inspector' && (
+          <>
+            <Header
+              bin={bin}
+              user={user}
+              myBins={myBins}
+              sharedBins={sharedBins}
+              members={binMembers}
+              isConnected={isConnected}
+              onSelectBin={(binId) => loadBin(binId)}
+              onNewBin={createNewBin}
+              onDeleteBin={handleDeleteBin}
+              onRenameBin={handleRenameBin}
+              onOpenSettings={() => setIsSettingsOpen(true)}
+              onOpenForward={() => setIsForwardOpen(true)}
+              onOpenShare={() => setIsShareOpen(true)}
+              onClearRequests={handleClearRequests}
+              onLogout={handleLogout}
+              ssoAuthUrl={ssoAuthUrl}
+              totalRequests={requests.length}
+            />
 
-          {/* 桌面端宽度调节拖拽中缝 */}
-          {!isMobile && (
-            <div
-              onMouseDown={handleMouseDownResize}
-              className={`w-1 cursor-col-resize hover:bg-indigo-500 transition-colors flex-shrink-0 relative group z-10 ${
-                isResizing ? 'bg-indigo-500' : 'bg-slate-800'
-              }`}
-              title="左右拖动调整分栏宽度"
-            >
-              <div className="absolute inset-y-0 -left-1 -right-1" />
-            </div>
-          )}
+            {/* 主体两栏视图（支持拖拽分栏与移动端自适应抽屉） */}
+            <main className="flex-1 flex overflow-hidden relative select-text">
+              {/* 左侧列表 */}
+              {(!isMobile || !selectedRequest) && (
+                <div 
+                  style={{ width: isMobile ? '100%' : `${sidebarWidth}px` }} 
+                  className="flex-shrink-0 h-full overflow-hidden"
+                >
+                  <RequestList
+                    requests={requests}
+                    selectedId={selectedRequest?.id || null}
+                    onSelect={(req) => setSelectedRequest(req)}
+                    webhookUrl={currentWebhookUrl}
+                    isPaused={isStreamPaused}
+                    onTogglePause={() => setIsStreamPaused((prev) => !prev)}
+                    onExportJson={handleExportJson}
+                  />
+                </div>
+              )}
 
-          {/* 右侧详情 */}
-          {(!isMobile || selectedRequest) && (
-            <div className="flex-1 h-full min-w-0 overflow-hidden">
-              <RequestDetail
-                request={selectedRequest}
-                onDelete={handleDeleteRequest}
-                onOpenReplay={handleOpenReplay}
-                onOpenInClient={handleOpenInClient}
-                canEdit={canEdit}
-                isMobile={isMobile}
-                onBackToList={() => setSelectedRequest(null)}
-              />
-            </div>
-          )}
-        </main>
-      )}
+              {/* 桌面端宽度调节拖拽中缝 */}
+              {!isMobile && (
+                <div
+                  onMouseDown={handleMouseDownResize}
+                  className={`w-1 cursor-col-resize hover:bg-indigo-500 transition-colors flex-shrink-0 relative group z-10 ${
+                    isResizing ? 'bg-indigo-500' : 'bg-slate-800'
+                  }`}
+                  title="左右拖动调整分栏宽度"
+                >
+                  <div className="absolute inset-y-0 -left-1 -right-1" />
+                </div>
+              )}
+
+              {/* 右侧详情 */}
+              {(!isMobile || selectedRequest) && (
+                <div className="flex-1 h-full min-w-0 overflow-hidden">
+                  <RequestDetail
+                    request={selectedRequest}
+                    onDelete={handleDeleteRequest}
+                    onOpenReplay={handleOpenReplay}
+                    onOpenInClient={handleOpenInClient}
+                    canEdit={canEdit}
+                    isMobile={isMobile}
+                    onBackToList={() => setSelectedRequest(null)}
+                  />
+                </div>
+              )}
+            </main>
+          </>
+        )}
+
+        {mainViewMode === 'client' && (
+          <main className="flex-1 flex overflow-hidden relative select-text">
+            <ApiClient initialPayload={clientInitialPayload} />
+          </main>
+        )}
+
+        {mainViewMode === 'tcp' && (
+          <main className="flex-1 flex overflow-hidden relative select-text">
+            <TcpClient />
+          </main>
+        )}
+      </div>
 
       {/* 内网转发客户端弹窗 */}
       <ForwardModal

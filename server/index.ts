@@ -5,6 +5,7 @@ import { forwardScript } from './forwardScript';
 import { requireAuth, getOptionalUser, getBinUserRole } from './auth';
 import { authRouter } from './routes/auth';
 import { tunnelRouter } from './routes/tunnel';
+import { tcpRouter } from './routes/tcp';
 
 const app = new Hono<{ Bindings: Env; Variables: { user: UserSession; token: string } }>();
 
@@ -192,6 +193,9 @@ api.route('/auth', authRouter);
 
 // TCP 隧道路由 (/api/tunnel)
 api.route('/', tunnelRouter);
+
+// TCP 端口探测路由 (/api/tcp/ping)
+api.route('/', tcpRouter);
 
 // 获取当前登录用户可访问的所有频道列表（我的频道 vs 与我协作）
 api.get('/bins', requireAuth, async (c) => {

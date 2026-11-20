@@ -22,7 +22,9 @@ import {
   FileText,
   AlertCircle,
   ExternalLink,
-  ChevronDown
+  ChevronDown,
+  Columns,
+  Rows
 } from 'lucide-react';
 import { OutboundRequestPayload, OutboundResponseData } from '../types';
 import { getMethodColor, formatBytes } from '../lib/utils';
@@ -289,6 +291,22 @@ interface ApiClientProps {
 export const ApiClient: React.FC<ApiClientProps> = ({ initialPayload }) => {
   // 发包节点模式：'edge' (Cloudflare 全球边缘代理) vs 'browser' (浏览器直连)
   const [sendNode, setSendNode] = useState<'edge' | 'browser'>('edge');
+
+  // 分栏布局模式：'horizontal' (左右分栏，宽屏推荐) vs 'vertical' (上下分栏，常规屏幕推荐)
+  const [layoutMode, setLayoutMode] = useState<'horizontal' | 'vertical'>(() => {
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('api_client_layout') as any) || 'horizontal';
+    }
+    return 'horizontal';
+  });
+
+  const toggleLayoutMode = () => {
+    const next = layoutMode === 'horizontal' ? 'vertical' : 'horizontal';
+    setLayoutMode(next);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('api_client_layout', next);
+    }
+  };
 
   // 请求基本要素
   const [method, setMethod] = useState<string>('GET');
@@ -737,6 +755,16 @@ export const ApiClient: React.FC<ApiClientProps> = ({ initialPayload }) => {
             <History className="w-3.5 h-3.5 text-slate-300" />
             <span>历史 ({history.length})</span>
           </button>
+
+          {/* 布局切换 (左右分栏 vs 上下分栏) */}
+          <button
+            onClick={toggleLayoutMode}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+            title={layoutMode === 'horizontal' ? '切换为上下分栏布局 (适合常规笔记本屏幕)' : '切换为左右分栏布局 (适合宽屏显示器)'}
+          >
+            {layoutMode === 'horizontal' ? <Rows className="w-3.5 h-3.5 text-slate-400" /> : <Columns className="w-3.5 h-3.5 text-slate-400" />}
+            <span className="hidden sm:inline">{layoutMode === 'horizontal' ? '上下分栏' : '左右分栏'}</span>
+          </button>
         </div>
       </div>
 
@@ -786,11 +814,11 @@ export const ApiClient: React.FC<ApiClientProps> = ({ initialPayload }) => {
         </button>
       </div>
 
-      {/* 主体两栏布局：左侧请求构建器，右侧响应结果面板 */}
-      <div className="flex-1 flex overflow-hidden relative">
+      {/* 主体分栏布局：支持左右分栏 (horizontal) 与上下分栏 (vertical) */}
+      <div className={`flex-1 flex ${layoutMode === 'horizontal' ? 'flex-row' : 'flex-col'} overflow-hidden relative`}>
         
-        {/* 左侧：请求构造器 */}
-        <div className="w-1/2 border-r border-slate-800 flex flex-col h-full bg-slate-900/30">
+        {/* 请求构造器 */}
+        <div className={`${layoutMode === 'horizontal' ? 'w-1/2 border-r' : 'h-1/2 border-b'} border-slate-800 flex flex-col bg-slate-900/30 overflow-hidden`}>
           {/* 请求参数选项卡 */}
           <div className="border-b border-slate-800 bg-slate-900/60 px-3 flex items-center gap-1">
             <button
@@ -1077,8 +1105,8 @@ export const ApiClient: React.FC<ApiClientProps> = ({ initialPayload }) => {
           </div>
         </div>
 
-        {/* 右侧：响应结果面板 */}
-        <div className="w-1/2 flex flex-col h-full bg-slate-950 overflow-hidden">
+        {/* 响应结果面板 */}
+        <div className={`${layoutMode === 'horizontal' ? 'w-1/2' : 'h-1/2'} flex flex-col bg-slate-950 overflow-hidden`}>
           {/* 响应状态栏 */}
           <div className="border-b border-slate-800 bg-slate-900/60 px-4 py-2 flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -1450,3 +1478,4 @@ export const ApiClient: React.FC<ApiClientProps> = ({ initialPayload }) => {
     </div>
   );
 };
+

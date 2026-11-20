@@ -74,3 +74,16 @@ export interface OutboundResponseData {
   error?: string;
 }
 
+export interface TcpPingResult {
+  host: string;
+  ip?: string;
+  port: number;
+  open: boolean;
+  latencyMs: number;
+  status: 'open' | 'closed' | 'timeout' | 'error';
+  colo?: string;
+  banner?: string;
+  error?: string;
+  timestamp: number;
+}
+
