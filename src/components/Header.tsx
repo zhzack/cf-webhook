@@ -18,6 +18,7 @@ import {
   Eye,
   Edit2,
   Crown,
+  Send,
   X
 } from 'lucide-react';
 import { Bin, User, BinMember } from '../types';
@@ -39,6 +40,8 @@ interface HeaderProps {
   onClearRequests: () => void;
   onLogout: () => void;
   ssoAuthUrl?: string;
+  viewMode?: 'inspector' | 'client';
+  onViewModeChange?: (mode: 'inspector' | 'client') => void;
   totalRequests: number;
 }
 
@@ -48,6 +51,8 @@ export const Header: React.FC<HeaderProps> = ({
   myBins,
   sharedBins,
   members = [],
+  viewMode = 'inspector',
+  onViewModeChange,
   isConnected,
   onSelectBin,
   onNewBin,
@@ -345,33 +350,70 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* 专属 Webhook URL 复制条 */}
-        <div className="flex-1 max-w-lg w-full">
-          <div className="flex items-center rounded-lg bg-slate-950 border border-slate-800 focus-within:border-indigo-500/50 p-1 transition-all">
-            <div className="px-2 text-slate-500 flex items-center gap-1 text-xs select-none">
-              <Radio className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
-              <span>URL:</span>
-            </div>
-            <input
-              type="text"
-              readOnly
-              value={webhookUrl || '正在生成通道...'}
-              className="bg-transparent text-xs sm:text-sm text-indigo-200 font-mono w-full outline-none px-2 select-all truncate"
-            />
+        {/* 主功能视图切换开关 (Webhook 监听 vs API 发包调试) */}
+        {onViewModeChange && (
+          <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 flex-shrink-0">
             <button
-              onClick={handleCopy}
-              disabled={!webhookUrl}
-              className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                copied
-                  ? 'bg-emerald-600 text-white shadow'
-                  : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm'
+              onClick={() => onViewModeChange('inspector')}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition ${
+                viewMode === 'inspector'
+                  ? 'bg-indigo-600 text-white shadow-sm font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copied ? '已复制' : '复制'}</span>
+              <Radio className="w-3.5 h-3.5" />
+              <span>Webhook 监听</span>
+            </button>
+            <button
+              onClick={() => onViewModeChange('client')}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition ${
+                viewMode === 'client'
+                  ? 'bg-indigo-600 text-white shadow-sm font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>API 发包调试</span>
             </button>
           </div>
-        </div>
+        )}
+
+        {/* 专属 Webhook URL 复制条 (仅在 Inspector 视图显示) */}
+        {viewMode === 'inspector' ? (
+          <div className="flex-1 max-w-lg w-full">
+            <div className="flex items-center rounded-lg bg-slate-950 border border-slate-800 focus-within:border-indigo-500/50 p-1 transition-all">
+              <div className="px-2 text-slate-500 flex items-center gap-1 text-xs select-none">
+                <Radio className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                <span>URL:</span>
+              </div>
+              <input
+                type="text"
+                readOnly
+                value={webhookUrl || '正在生成通道...'}
+                className="bg-transparent text-xs sm:text-sm text-indigo-200 font-mono w-full outline-none px-2 select-all truncate"
+              />
+              <button
+                onClick={handleCopy}
+                disabled={!webhookUrl}
+                className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                  copied
+                    ? 'bg-emerald-600 text-white shadow'
+                    : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm'
+                }`}
+              >
+                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copied ? '已复制' : '复制'}</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 max-w-lg hidden md:flex items-center justify-center">
+            <span className="text-xs text-slate-400 font-mono flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-950 border border-slate-800">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              Cloudflare 全球边缘发包节点就绪
+            </span>
+          </div>
+        )}
 
         {/* 操作功能按钮 & 用户统一账号中心 */}
         <div className="flex items-center gap-1.5 w-full md:w-auto justify-end flex-wrap">

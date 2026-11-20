@@ -6,12 +6,14 @@ import { SettingsModal } from './components/SettingsModal';
 import { ReplayModal } from './components/ReplayModal';
 import { ForwardModal } from './components/ForwardModal';
 import { ShareModal } from './components/ShareModal';
+import { ApiClient } from './components/ApiClient';
 import { Bin, WebhookRecord, User, BinMember } from './types';
 import { fetchApi } from './api';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
+  const [mainViewMode, setMainViewMode] = useState<'inspector' | 'client'>('inspector');
   const [myBins, setMyBins] = useState<Bin[]>([]);
   const [sharedBins, setSharedBins] = useState<Bin[]>([]);
   const [userBins, setUserBins] = useState<Bin[]>([]);
@@ -539,57 +541,66 @@ export default function App() {
         onOpenShare={() => setIsShareOpen(true)}
         onClearRequests={handleClearRequests}
         onLogout={handleLogout}
+        viewMode={mainViewMode}
+        onViewModeChange={setMainViewMode}
         ssoAuthUrl={ssoAuthUrl}
         totalRequests={requests.length}
       />
 
-      {/* 主体两栏视图（支持拖拽分栏与移动端自适应抽屉） */}
-      <main className="flex-1 flex overflow-hidden relative select-text">
-        {/* 左侧列表 */}
-        {(!isMobile || !selectedRequest) && (
-          <div 
-            style={{ width: isMobile ? '100%' : `${sidebarWidth}px` }} 
-            className="flex-shrink-0 h-full overflow-hidden"
-          >
-            <RequestList
-              requests={requests}
-              selectedId={selectedRequest?.id || null}
-              onSelect={(req) => setSelectedRequest(req)}
-              webhookUrl={currentWebhookUrl}
-              isPaused={isStreamPaused}
-              onTogglePause={() => setIsStreamPaused((prev) => !prev)}
-              onExportJson={handleExportJson}
-            />
-          </div>
-        )}
+      {/* 主体视图 */}
+      {mainViewMode === 'client' ? (
+        <main className="flex-1 flex overflow-hidden relative select-text">
+          <ApiClient />
+        </main>
+      ) : (
+        /* 主体两栏视图（支持拖拽分栏与移动端自适应抽屉） */
+        <main className="flex-1 flex overflow-hidden relative select-text">
+          {/* 左侧列表 */}
+          {(!isMobile || !selectedRequest) && (
+            <div 
+              style={{ width: isMobile ? '100%' : `${sidebarWidth}px` }} 
+              className="flex-shrink-0 h-full overflow-hidden"
+            >
+              <RequestList
+                requests={requests}
+                selectedId={selectedRequest?.id || null}
+                onSelect={(req) => setSelectedRequest(req)}
+                webhookUrl={currentWebhookUrl}
+                isPaused={isStreamPaused}
+                onTogglePause={() => setIsStreamPaused((prev) => !prev)}
+                onExportJson={handleExportJson}
+              />
+            </div>
+          )}
 
-        {/* 桌面端宽度调节拖拽中缝 */}
-        {!isMobile && (
-          <div
-            onMouseDown={handleMouseDownResize}
-            className={`w-1 cursor-col-resize hover:bg-indigo-500 transition-colors flex-shrink-0 relative group z-10 ${
-              isResizing ? 'bg-indigo-500' : 'bg-slate-800'
-            }`}
-            title="左右拖动调整分栏宽度"
-          >
-            <div className="absolute inset-y-0 -left-1 -right-1" />
-          </div>
-        )}
+          {/* 桌面端宽度调节拖拽中缝 */}
+          {!isMobile && (
+            <div
+              onMouseDown={handleMouseDownResize}
+              className={`w-1 cursor-col-resize hover:bg-indigo-500 transition-colors flex-shrink-0 relative group z-10 ${
+                isResizing ? 'bg-indigo-500' : 'bg-slate-800'
+              }`}
+              title="左右拖动调整分栏宽度"
+            >
+              <div className="absolute inset-y-0 -left-1 -right-1" />
+            </div>
+          )}
 
-        {/* 右侧详情 */}
-        {(!isMobile || selectedRequest) && (
-          <div className="flex-1 h-full min-w-0 overflow-hidden">
-            <RequestDetail
-              request={selectedRequest}
-              onDelete={handleDeleteRequest}
-              onOpenReplay={handleOpenReplay}
-              canEdit={canEdit}
-              isMobile={isMobile}
-              onBackToList={() => setSelectedRequest(null)}
-            />
-          </div>
-        )}
-      </main>
+          {/* 右侧详情 */}
+          {(!isMobile || selectedRequest) && (
+            <div className="flex-1 h-full min-w-0 overflow-hidden">
+              <RequestDetail
+                request={selectedRequest}
+                onDelete={handleDeleteRequest}
+                onOpenReplay={handleOpenReplay}
+                canEdit={canEdit}
+                isMobile={isMobile}
+                onBackToList={() => setSelectedRequest(null)}
+              />
+            </div>
+          )}
+        </main>
+      )}
 
       {/* 内网转发客户端弹窗 */}
       <ForwardModal

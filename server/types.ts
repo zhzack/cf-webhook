@@ -66,3 +66,28 @@ export interface WebhookRecord {
   content_type: string | null;
   created_at: number;
 }
+
+export interface OutboundRequestPayload {
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  queryParams?: Record<string, string>;
+  body?: string;
+  auth?: {
+    type: 'none' | 'bearer' | 'basic';
+    token?: string;
+    username?: string;
+    password?: string;
+  };
+}
+
+export interface OutboundResponseData {
+  success: boolean;
+  status: number;
+  statusText: string;
+  durationMs: number;
+  sizeBytes: number;
+  headers: Record<string, string>;
+  body: string;
+  error?: string;
+}

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { Env, Bin, WebhookRecord, UserSession, BinMember } from './types';
+import { Env, Bin, WebhookRecord, UserSession, BinMember, OutboundRequestPayload, OutboundResponseData } from './types';
 import { forwardScript } from './forwardScript';
 import { requireAuth, getOptionalUser, getBinUserRole } from './auth';
 import { authRouter } from './routes/auth';
@@ -747,6 +747,118 @@ api.post('/bins/:binId/replay', requireAuth, async (c) => {
     });
   } catch (err: any) {
     return c.json({ success: false, error: err.message || 'Replay failed' }, 500);
+  }
+});
+
+// 平台通用出站发包代理 (API 调试器，支持从边缘直接发包)
+api.post('/send', requireAuth, async (c) => {
+  const startTime = Date.now();
+  try {
+    const payload: OutboundRequestPayload = await c.req.json().catch(() => ({} as any));
+    let { url, method = 'GET', headers = {}, queryParams = {}, body, auth } = payload;
+
+    if (!url || typeof url !== 'string') {
+      return c.json<OutboundResponseData>({
+        success: false,
+        status: 0,
+        statusText: 'Bad Request',
+        durationMs: 0,
+        sizeBytes: 0,
+        headers: {},
+        body: '',
+        error: '请求 URL 不能为空',
+      }, 400);
+    }
+
+    url = url.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      url = 'https://' + url;
+    }
+
+    // 拼接 Query 参数
+    try {
+      const urlObj = new URL(url);
+      if (queryParams && typeof queryParams === 'object') {
+        for (const [k, v] of Object.entries(queryParams)) {
+          if (k && k.trim()) {
+            urlObj.searchParams.set(k.trim(), String(v));
+          }
+        }
+      }
+      url = urlObj.toString();
+    } catch (e: any) {
+      return c.json<OutboundResponseData>({
+        success: false,
+        status: 0,
+        statusText: 'Invalid URL',
+        durationMs: 0,
+        sizeBytes: 0,
+        headers: {},
+        body: '',
+        error: '无效的目标 URL: ' + e.message,
+      }, 400);
+    }
+
+    // 整理并清洗 Headers
+    const cleanHeaders: Record<string, string> = {};
+    if (headers && typeof headers === 'object') {
+      for (const [k, v] of Object.entries(headers)) {
+        const lower = k.toLowerCase().trim();
+        if (lower && !['host', 'content-length', 'connection', 'cf-ray', 'cf-connecting-ip'].includes(lower)) {
+          cleanHeaders[k.trim()] = String(v);
+        }
+      }
+    }
+
+    // 处理认证体系
+    if (auth && auth.type) {
+      if (auth.type === 'bearer' && auth.token) {
+        cleanHeaders['Authorization'] = `Bearer ${auth.token.trim()}`;
+      } else if (auth.type === 'basic' && auth.username) {
+        const credentials = btoa(`${auth.username}:${auth.password || ''}`);
+        cleanHeaders['Authorization'] = `Basic ${credentials}`;
+      }
+    }
+
+    const upperMethod = method.toUpperCase();
+    const hasBody = !['GET', 'HEAD'].includes(upperMethod) && body !== undefined && body !== null;
+
+    const fetchRes = await fetch(url, {
+      method: upperMethod,
+      headers: cleanHeaders,
+      body: hasBody ? String(body) : undefined,
+    });
+
+    const durationMs = Date.now() - startTime;
+    const resText = await fetchRes.text();
+    const resHeaders: Record<string, string> = {};
+    fetchRes.headers.forEach((v, k) => {
+      resHeaders[k] = v;
+    });
+
+    const sizeBytes = new Blob([resText]).size;
+
+    return c.json<OutboundResponseData>({
+      success: true,
+      status: fetchRes.status,
+      statusText: fetchRes.statusText,
+      durationMs,
+      sizeBytes,
+      headers: resHeaders,
+      body: resText,
+    });
+  } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    return c.json<OutboundResponseData>({
+      success: false,
+      status: 0,
+      statusText: 'Network Error',
+      durationMs,
+      sizeBytes: 0,
+      headers: {},
+      body: '',
+      error: err.message || '请求发送异常',
+    }, 500);
   }
 });
 
